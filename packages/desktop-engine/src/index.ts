@@ -20,3 +20,8 @@ export * from "./migrateV1";
 export * from "./starterProject";
 export * from "./resolveDesktopFrame";
 export * from "./sceneAdapter";
+export * from "./stage/shell";
+export * from "./stage/vfs";
+export * from "./stage/apps";
+export * from "./stage/recorder";
+export * from "./stage/effects";

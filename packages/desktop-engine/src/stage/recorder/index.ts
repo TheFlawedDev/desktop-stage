@@ -579,7 +579,8 @@ export class StageRecorder {
         },
       });
 
-      if (this._state === "disposed") {
+      const stateAfterAwait: string = this._state;
+      if (stateAfterAwait === "disposed") {
         session.dispose();
         throw new Error("StageRecorder was disposed during start");
       }
@@ -593,7 +594,8 @@ export class StageRecorder {
       });
       this._state = "recording";
     } catch (err) {
-      if (this._state !== "disposed") {
+      const stateInCatch: string = this._state;
+      if (stateInCatch !== "disposed") {
         this._state = "idle";
       }
       throw err;
