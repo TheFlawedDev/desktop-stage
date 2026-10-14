@@ -52,6 +52,9 @@ const TRAFFIC_LIGHT_GAP = 16;
 /** Columns a tab occupies when it is drawn, so a tab cannot collapse to nothing. */
 const TAB_WIDTH = 4;
 
+/** Opacity applied to secondary text runs (line numbers, muted labels). */
+const MUTED_TEXT_ALPHA = 0.75;
+
 /** Font family used for window bodies that are not code. */
 const UI_FONT = "Inter, Segoe UI, Helvetica Neue, Arial, sans-serif";
 /** Font family used for code and terminal windows on every platform. */
@@ -223,19 +226,38 @@ export function clampTextToWidth(
   const ellipsis = "…";
   const ellipsisWidth = estimateTextWidth(ellipsis, fontSize, monospace);
 
-  let low = 0;
-  let high = characters.length;
-  while (low < high) {
-    const mid = Math.ceil((low + high) / 2);
-    const candidate = characters.slice(0, mid).join("") + ellipsis;
-    if (estimateTextWidth(candidate, fontSize, monospace) <= maxWidth) low = mid;
-    else high = mid - 1;
+  // Longest prefix that still leaves room for the ellipsis. The estimate is
+  // monotonic in the prefix length, so the binary search finds it.
+  let withEllipsis = 0;
+  if (ellipsisWidth <= maxWidth) {
+    let low = 0;
+    let high = characters.length;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      const candidate = characters.slice(0, mid).join("") + ellipsis;
+      if (estimateTextWidth(candidate, fontSize, monospace) <= maxWidth) low = mid;
+      else high = mid - 1;
+    }
+    withEllipsis = low;
   }
 
-  const kept = characters.slice(0, low).join("");
-  // A width too small even for the ellipsis still keeps whatever fits, so a
-  // narrow window degrades instead of drawing nothing.
-  const result = kept.length > 0 && ellipsisWidth <= maxWidth ? kept + ellipsis : kept;
+  // The ellipsis cannot join even one character — the window is narrower than
+  // `ellipsis + one glyph` — so keep the longest plain prefix instead. A narrow
+  // window degrades to a cut-off label rather than drawing nothing.
+  if (withEllipsis === 0) {
+    let low = 0;
+    let high = characters.length;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      const prefix = characters.slice(0, mid).join("");
+      if (estimateTextWidth(prefix, fontSize, monospace) <= maxWidth) low = mid;
+      else high = mid - 1;
+    }
+    const kept = characters.slice(0, low).join("");
+    return { text: kept, width: estimateTextWidth(kept, fontSize, monospace), truncated: true };
+  }
+
+  const result = characters.slice(0, withEllipsis).join("") + ellipsis;
   return { text: result, width: estimateTextWidth(result, fontSize, monospace), truncated: true };
 }
 
@@ -349,12 +371,16 @@ export function layoutDesktopWindow(
 
   const titleLeft =
     CHROME_PADDING_X + (showTitleBar && payload.look.chrome === "window" ? TRAFFIC_LIGHT_GAP * 3 : 0);
-  const fittedTitle = clampTextToWidth(
-    payload.title,
-    Math.max(0, safeWidth - titleLeft - CHROME_PADDING_X),
-    TITLE_FONT_SIZE,
-    false,
-  );
+  // A hidden title bar draws no text, so the layout carries none either: an
+  // invisible run would still contribute to the container's measured bounds.
+  const fittedTitle = showTitleBar
+    ? clampTextToWidth(
+        payload.title,
+        Math.max(0, safeWidth - titleLeft - CHROME_PADDING_X),
+        TITLE_FONT_SIZE,
+        false,
+      )
+    : { text: "", width: 0, truncated: false };
 
   const trafficLights: WindowDot[] = [];
   if (showTitleBar && payload.look.chrome === "window") {
@@ -530,6 +556,17 @@ export function layoutDesktopWindow(
 }
 
 /**
+ * A shell prompt line: `user@host [path] % command`.
+ *
+ * The first token is the user/host (or the working directory), an optional
+ * second token is a path (`~`, `~/project`, `/srv/app`), and the marker must be
+ * followed by whitespace and the command it introduces. Output that merely
+ * contains a marker character — `Total: 50 % done` — has no such shape and is
+ * left in the primary text colour.
+ */
+const SHELL_PROMPT = /^[^\s]+\s+(?:~[^\s]*|\/[^\s]*)?\s*[%$#>]\s+\S/;
+
+/**
  * Colour for one body line.
  *
  * A terminal's prompt lines are drawn in the accent, which is what makes an
@@ -544,7 +581,7 @@ export function bodyLineColor(
   line: string,
 ): string {
   if (payload.appKind !== "terminal") return palette.text;
-  return /^[^\s]+\s*[%$#>]\s/.test(line) ? palette.accent : palette.text;
+  return SHELL_PROMPT.test(line) ? palette.accent : palette.text;
 }
 
 // ---------------------------------------------------------------------------
@@ -556,9 +593,6 @@ function toTextStyle(run: WindowTextRun): TextStyle {
     fontFamily: run.monospace ? MONO_FONT : UI_FONT,
     fontSize: run.fontSize,
     fill: run.color,
-    // Muted runs are the app's own secondary text (line numbers, an address),
-    // so they are dimmed in place rather than given a second colour.
-    alpha: run.muted ? 0.75 : 1,
     fontWeight: "500",
     lineHeight: run.fontSize * 1.5,
   });
@@ -694,6 +728,10 @@ function syncKey(payload: DesktopWindowNodePayload, width: number, height: numbe
 function applyTextRun(text: Text, run: WindowTextRun): void {
   if (text.text !== run.text) text.text = run.text;
   text.style = toTextStyle(run);
+  // Muted runs are the app's own secondary text (line numbers, an address), so
+  // they are dimmed in place rather than given a second colour. Opacity lives
+  // on the display object; TextStyle has no top-level `alpha`.
+  text.alpha = run.muted ? MUTED_TEXT_ALPHA : 1;
   text.position.set(run.x, run.y);
 }
 

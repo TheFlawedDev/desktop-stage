@@ -14,11 +14,13 @@ import {
 } from "pixi.js";
 import type { Scene, SceneNode } from "@cutaway/render-engine";
 import type { ResolvedEffect } from "@cutaway/effects-engine";
-import { DESKTOP_WINDOW_CONTENT_TYPE } from "@desktop-stage/desktop-engine";
+import {
+  DESKTOP_WINDOW_CONTENT_TYPE,
+  readDesktopWindowPayload,
+} from "@desktop-stage/desktop-engine";
 import {
   DesktopWindowView,
   createDesktopWindow,
-  readDesktopWindowPayload,
 } from "@/features/desktop-stage/desktopWindowGraphics";
 import {
   EFFECT_BLUR,

@@ -101,10 +101,13 @@ describe("clampTextToWidth", () => {
     expect(clampTextToWidth("anything", -5, 13, false).text).toBe("");
   });
 
-  it("keeps the leading text when even the ellipsis will not fit", () => {
+  it("keeps the longest plain prefix when the ellipsis will not fit beside it", () => {
     const fitted = clampTextToWidth("abcdefghij", 8, 13, false);
-    expect(fitted.text.startsWith("a")).toBe(true);
+    // One glyph fits at this width; an ellipsis plus that glyph does not, so the
+    // fallback keeps the text without inventing room for a marker.
+    expect(fitted.text).toBe("a");
     expect(fitted.text.endsWith("…")).toBe(false);
+    expect(fitted.width).toBeLessThanOrEqual(8);
   });
 });
 
@@ -133,11 +136,18 @@ describe("windowPalette", () => {
   });
 
   it("falls back instead of drawing nothing when the accent is unreadable", () => {
-    const palette = windowPalette(
+    const fallback = windowPalette(
+      windowPayload({ look: { ...windowPayload().look, accentColor: "#7c6cff" } }),
+    );
+    const unreadable = windowPalette(
       windowPayload({ look: { ...windowPayload().look, accentColor: "rebeccapurple" } }),
     );
-    expect(palette.accent).toMatch(/^#[0-9a-f]{6}$/);
-    expect(palette.accent).toBe("#7c6cff");
+
+    expect(unreadable.accent).toMatch(/^#[0-9a-f]{6}$/);
+    // The fallback goes through the same theme-contrast lift as any valid
+    // accent, so it matches that palette rather than the raw fallback colour.
+    expect(unreadable.accent).toBe(fallback.accent);
+    expect(unreadable.accent).not.toBe("#7c6cff");
   });
 });
 
@@ -300,9 +310,18 @@ describe("bodyLineColor", () => {
     expect(bodyLineColor(payload, palette, "studio@desktop ~ % npm run render")).toBe(palette.accent);
   });
 
+  it("accents the common user@host path marker prompt", () => {
+    expect(bodyLineColor(payload, palette, "studio@desktop ~ % npm run dev")).toBe(palette.accent);
+    expect(bodyLineColor(payload, palette, "studio@desktop ~/project % npm run dev")).toBe(
+      palette.accent,
+    );
+    expect(bodyLineColor(payload, palette, "user@host % ls")).toBe(palette.accent);
+  });
+
   it("leaves ordinary output in the primary text colour", () => {
     expect(bodyLineColor(payload, palette, "  Desktop Stage ready")).toBe(palette.text);
     expect(bodyLineColor(payload, palette, "")).toBe(palette.text);
+    expect(bodyLineColor(payload, palette, "Total: 50 % done")).toBe(palette.text);
   });
 
   it("never accents a non-terminal window's lines", () => {
