@@ -30,7 +30,11 @@
  */
 
 import type { ProjectDocument } from "@cutaway/types";
-import { V1_STORAGE_KEY, convertV1ProjectChecked, isV1Project } from "@desktop-stage/desktop-engine";
+import {
+  V1_STORAGE_KEY,
+  convertV1ProjectChecked,
+  isV1Project,
+} from "@desktop-stage/desktop-engine";
 
 /**
  * The slice of `localStorage` this module uses.
@@ -90,7 +94,9 @@ export function browserLegacyStorage(): LegacyStorage | null {
 }
 
 /** The raw old document, or null when it is absent or unreadable. */
-export function readLegacyCandidateJson(storage: LegacyStorage | null): string | null {
+export function readLegacyCandidateJson(
+  storage: LegacyStorage | null,
+): string | null {
   if (!storage) return null;
   try {
     return storage.getItem(V1_STORAGE_KEY);
@@ -137,8 +143,17 @@ export function recordLegacyImportDecision(
  * - `invalid` — unparseable JSON, or something that claims to be v1 but is not
  *   well formed. Both are reported rather than guessed at, so a malformed file
  *   leaves the open project untouched.
+ *
+ * `projectId` must be a **fresh** id from the caller. The converter itself
+ * defaults to a constant id, which is right for a pure function and wrong for
+ * an import: two different v1 documents would then share one stored record and
+ * the second would overwrite the first. Supplying it here rather than minting it
+ * inside keeps this function deterministic for its tests.
  */
-export function inspectLegacyProjectText(text: string): LegacyProjectInspection {
+export function inspectLegacyProjectText(
+  text: string,
+  projectId?: string,
+): LegacyProjectInspection {
   let parsed: unknown;
 
   try {
@@ -148,7 +163,7 @@ export function inspectLegacyProjectText(text: string): LegacyProjectInspection 
   }
 
   if (isV1Project(parsed)) {
-    const outcome = convertV1ProjectChecked(parsed);
+    const outcome = convertV1ProjectChecked(parsed, { projectId });
     return outcome.ok
       ? { kind: "converted", project: outcome.project }
       : { kind: "invalid", error: outcome.error };
@@ -157,7 +172,8 @@ export function inspectLegacyProjectText(text: string): LegacyProjectInspection 
   if (looksLikeV1Project(parsed)) {
     return {
       kind: "invalid",
-      error: "This file looks like a Desktop Stage version 1 project, but it is malformed.",
+      error:
+        "This file looks like a Desktop Stage version 1 project, but it is malformed.",
     };
   }
 
