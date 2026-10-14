@@ -14,6 +14,7 @@ import { DropOverlay } from "@/features/media/DropOverlay";
 import { MediaImportProvider } from "@/features/media/MediaImportProvider";
 import { ProjectProvider } from "@/features/project/ProjectProvider";
 import { LoadIssuesBanner } from "@/features/project/LoadIssuesBanner";
+import { LegacyImportPrompt } from "@/features/desktop-stage/LegacyImportPrompt";
 
 /**
  * The editor layout.
@@ -84,6 +85,7 @@ export function EditorShell() {
           <StatusBar />
           <DropOverlay />
           <LoadIssuesBanner />
+          <LegacyImportPrompt />
         </div>
       </ProjectProvider>
     </MediaImportProvider>

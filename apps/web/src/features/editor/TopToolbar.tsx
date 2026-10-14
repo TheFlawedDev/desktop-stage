@@ -98,17 +98,21 @@ export function TopToolbar() {
 
       <NewProjectButton />
 
+      {/* The manual open path matters even when local storage is unreadable —
+          a different origin, or a copy of the old project exported as JSON. */}
       <IconButton
         size="sm"
-        label="Open project file"
+        label="Open project or version 1 JSON file"
         onClick={() => projectInputRef.current?.click()}
       >
         <FolderOpen size={14} />
       </IconButton>
+      {/* `.json` as well as the MIME type: a v1 export is a bare `.json`, and an
+          OS that reports no type for it must not grey the file out. */}
       <input
         ref={projectInputRef}
         type="file"
-        accept=".cutaway,application/json"
+        accept=".cutaway,.json,application/json"
         className="hidden"
         onChange={(event) => {
           const file = event.target.files?.[0];
