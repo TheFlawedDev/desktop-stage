@@ -14,6 +14,7 @@ import { DropOverlay } from "@/features/media/DropOverlay";
 import { MediaImportProvider } from "@/features/media/MediaImportProvider";
 import { ProjectProvider } from "@/features/project/ProjectProvider";
 import { LoadIssuesBanner } from "@/features/project/LoadIssuesBanner";
+import { ArchiveStatusBanner } from "@/features/project/ArchiveStatusBanner";
 import { LegacyImportPrompt } from "@/features/desktop-stage/LegacyImportPrompt";
 
 /**
@@ -86,6 +87,7 @@ export function EditorShell() {
           <DropOverlay />
           <LoadIssuesBanner />
           <LegacyImportPrompt />
+          <ArchiveStatusBanner />
         </div>
       </ProjectProvider>
     </MediaImportProvider>

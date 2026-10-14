@@ -1,12 +1,23 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Download, FilePlus, FolderOpen, Import, Keyboard, Redo2, Save, Undo2 } from "lucide-react";
+import {
+  Download,
+  FileJson,
+  FilePlus,
+  FolderOpen,
+  Import,
+  Keyboard,
+  Redo2,
+  Share2,
+  Undo2,
+} from "lucide-react";
 import { Button, IconButton } from "@cutaway/ui";
 import { ASPECT_RATIOS, resolutionForAspect } from "@cutaway/utils";
 import { useEditorStore } from "@/state/editorStore";
 import { useMediaImportContext } from "@/features/media/MediaImportProvider";
 import { useProject } from "@/features/project/ProjectProvider";
+import { PROJECT_FILE_ACCEPT } from "@/features/project/projectFiles";
 import { ExportDialog } from "@/features/export/ExportDialog";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 
@@ -14,7 +25,7 @@ export function TopToolbar() {
   const inputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
   const { importFromFiles, isImporting } = useMediaImportContext();
-  const { downloadProject, openProjectFile } = useProject();
+  const { downloadProject, downloadArchive, openProjectFile, archive } = useProject();
   const projectName = useEditorStore((state) => state.project.name);
   const resolution = useEditorStore((state) => state.project.settings.resolution);
   const fps = useEditorStore((state) => state.project.settings.frameRate);
@@ -27,6 +38,10 @@ export function TopToolbar() {
 
   const undoable = history.past.length > 0;
   const redoable = history.future.length > 0;
+
+  // One flag for the whole archive flow, so a second Share click during packing
+  // — or an Open during an import — cannot start overlapping work.
+  const archiveBusy = archive.isBusy;
 
   return (
     <header className="border-border-subtle bg-surface-panel flex h-(--size-toolbar-height) shrink-0 items-center gap-1 border-b px-3">
@@ -99,20 +114,23 @@ export function TopToolbar() {
       <NewProjectButton />
 
       {/* The manual open path matters even when local storage is unreadable —
-          a different origin, or a copy of the old project exported as JSON. */}
+          a different origin, or a copy of the old project exported as JSON.
+          It takes archives as well: one control, dispatched by file kind. */}
       <IconButton
         size="sm"
-        label="Open project or version 1 JSON file"
+        label="Open project — .desktopstage archive, .cutaway project, or version 1 JSON"
+        disabled={archiveBusy}
         onClick={() => projectInputRef.current?.click()}
       >
         <FolderOpen size={14} />
       </IconButton>
-      {/* `.json` as well as the MIME type: a v1 export is a bare `.json`, and an
-          OS that reports no type for it must not grey the file out. */}
       <input
         ref={projectInputRef}
         type="file"
-        accept=".cutaway,.json,application/json"
+        // `.json` as well as the MIME types: a v1 export is a bare `.json`, and
+        // an OS that reports no type for it must not grey the file out.
+        // `application/zip` covers a `.desktopstage` download that lost its name.
+        accept={PROJECT_FILE_ACCEPT}
         className="hidden"
         onChange={(event) => {
           const file = event.target.files?.[0];
@@ -120,9 +138,31 @@ export function TopToolbar() {
           event.target.value = "";
         }}
       />
-      <IconButton size="sm" label="Save project to a file" onClick={downloadProject}>
-        <Save size={14} />
+
+      {/* Secondary, and named for what it is: the JSON file carries the document
+          but not the media, which stays in this browser's storage. */}
+      <IconButton
+        size="sm"
+        label="Export project JSON — document only, media not included"
+        disabled={archiveBusy}
+        onClick={downloadProject}
+      >
+        <FileJson size={14} />
       </IconButton>
+
+      {/* The default project-sharing action: document, manifest, and every
+          referenced media blob in one file that survives the trip to another
+          computer. */}
+      <Button
+        size="sm"
+        variant="primary"
+        icon={<Share2 size={14} />}
+        title="Share project (.desktopstage) — project and all media"
+        disabled={archiveBusy}
+        onClick={() => void downloadArchive()}
+      >
+        {archive.phase === "exporting" ? "Packing…" : "Share"}
+      </Button>
 
       <ExportButton />
     </header>

@@ -3,10 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { collectGarbage } from "@cutaway/media-engine";
 import {
+  archiveFileName,
+  exportProjectArchive,
+  importProjectArchive,
   parseProjectFile,
   referencedBlobKeys,
   serializeProject,
   projectFileName,
+  type ArchiveProgress,
 } from "@cutaway/project-io";
 import type { ProjectDocument } from "@cutaway/types";
 import {
@@ -25,6 +29,15 @@ import {
   loadMostRecentProject,
   saveProject,
 } from "@/state/projectStorage";
+import { downloadBlob } from "./downloadBlob";
+import {
+  UNKNOWN_PROJECT_FILE_MESSAGE,
+  classifyProjectFile,
+  describeArchiveFailure,
+  formatByteSize,
+  unbundledAssetNotice,
+  type ArchiveNotice,
+} from "./projectFiles";
 
 /**
  * Autosave, restore, and file import/export.
@@ -33,10 +46,48 @@ import {
  * update on every pointer move, and writing the document to IndexedDB sixty
  * times a second would stall the drag. A short idle delay batches a gesture
  * into one write.
+ *
+ * Two file formats leave this hook, and the difference matters to the user:
+ *
+ * - `.desktopstage` (`downloadArchive`) is the portable one — the document plus
+ *   the original bytes of every referenced media file, which is what makes a
+ *   project survive the trip to another computer.
+ * - JSON (`downloadProject`) is the document alone. It stores media *keys*, and
+ *   those keys address blobs in this browser only, so it is labelled
+ *   document-only everywhere it appears.
+ *
+ * Opening is dispatched by {@link classifyProjectFile}: archives go to the
+ * archive reader, JSON to the v1 converter or the current parser, and neither
+ * reader is ever given a file the other one was chosen for.
  */
 
 /** Idle time before an autosave fires. */
 const AUTOSAVE_DELAY_MS = 800;
+
+/**
+ * Recorded in the archive manifest, for a human reading the file later.
+ *
+ * Informational only: the archive's own `formatVersion` is what gates reading
+ * it, so a stale string here cannot make an unreadable archive look readable.
+ */
+const APP_VERSION = "0.2.0";
+
+/** How much of a file to read when deciding what it is. Enough for a ZIP head. */
+const FILE_HEAD_BYTES = 512;
+
+/**
+ * A file's leading bytes, or null when even that cannot be read.
+ *
+ * `slice` is used rather than reading the whole file: a two-gigabyte archive
+ * must not be pulled into memory just to find out that it is a ZIP.
+ */
+async function readFileHead(file: File): Promise<Uint8Array | null> {
+  try {
+    return new Uint8Array(await file.slice(0, FILE_HEAD_BYTES).arrayBuffer());
+  } catch {
+    return null;
+  }
+}
 
 export type SaveState = "idle" | "saving" | "saved" | "error" | "unavailable";
 
@@ -64,6 +115,22 @@ export interface LegacyImportOffer {
   decline: () => void;
 }
 
+/** Which half of the archive flow is running, if any. */
+export type ArchivePhase = "idle" | "exporting" | "importing";
+
+export interface ArchiveState {
+  phase: ArchivePhase;
+  /** Progress of the operation in flight, or null when there is none. */
+  progress: ArchiveProgress | null;
+  /** The result of the last archive operation, until it is dismissed. */
+  notice: ArchiveNotice | null;
+  dismissNotice: () => void;
+  /** Bytes of the last `.desktopstage` written or read. */
+  lastArchiveBytes: number | null;
+  /** True while an archive is being packed or unpacked. */
+  isBusy: boolean;
+}
+
 export interface ProjectPersistence {
   saveState: SaveState;
   lastSavedAt: number | null;
@@ -71,8 +138,19 @@ export interface ProjectPersistence {
   loadIssues: string[];
   dismissIssues: () => void;
   saveNow: () => Promise<void>;
+  /**
+   * Downloads the document alone as JSON.
+   *
+   * Portable between installs of the editor, but *not* portable with media: the
+   * JSON stores references to blobs that live in this browser. Labelled as
+   * document-only wherever it is offered, and again when it completes.
+   */
   downloadProject: () => void;
+  /** Packs the document and every referenced media blob into `.desktopstage`. */
+  downloadArchive: () => Promise<void>;
   openProjectFile: (file: File) => Promise<void>;
+  /** Status of the portable-archive flow, for the toolbar and the banner. */
+  archive: ArchiveState;
   legacyImport: LegacyImportOffer;
 }
 
@@ -86,12 +164,37 @@ export function useProjectPersistence(): ProjectPersistence {
   const [loadIssues, setLoadIssues] = useState<string[]>([]);
   const [legacyStatus, setLegacyStatus] = useState<LegacyImportStatus>("idle");
   const [legacyError, setLegacyError] = useState<string | null>(null);
+  const [archivePhase, setArchivePhase] = useState<ArchivePhase>("idle");
+  const [archiveProgress, setArchiveProgress] = useState<ArchiveProgress | null>(null);
+  const [archiveNotice, setArchiveNotice] = useState<ArchiveNotice | null>(null);
+  const [lastArchiveBytes, setLastArchiveBytes] = useState<number | null>(null);
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Blocks autosave until the restore attempt has finished. */
   const restoredRef = useRef(false);
   /** The converted legacy document, held from discovery until the user decides. */
   const legacyProjectRef = useRef<ProjectDocument | null>(null);
+  /**
+   * The synchronous guard against a duplicated archive action.
+   *
+   * A ref rather than the `phase` state: two clicks in the same tick both read
+   * the state from before either re-render, so a state check alone would pack
+   * the same project twice and hand the browser two downloads.
+   */
+  const archiveBusyRef = useRef(false);
+
+  const beginArchive = useCallback((phase: ArchivePhase) => {
+    archiveBusyRef.current = true;
+    setArchivePhase(phase);
+    setArchiveProgress(null);
+    setArchiveNotice(null);
+  }, []);
+
+  const endArchive = useCallback(() => {
+    archiveBusyRef.current = false;
+    setArchivePhase("idle");
+    setArchiveProgress(null);
+  }, []);
 
   const persist = useCallback(async (document: ProjectDocument) => {
     if (!isStorageAvailable()) {
@@ -229,21 +332,140 @@ export function useProjectPersistence(): ProjectPersistence {
     await persist(useEditorStore.getState().project);
   }, [persist]);
 
+  /**
+   * Document-only JSON export.
+   *
+   * Kept because it is the inspectable, diffable, hand-editable form of the
+   * project, and because a v1-era user already has these files. It is *not*
+   * labelled a backup anywhere in the UI: the media it references stays in this
+   * browser, so the notice after the download says exactly that.
+   */
   const downloadProject = useCallback(() => {
     const current = useEditorStore.getState().project;
     const blob = new Blob([serializeProject(current)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
+    const fileName = projectFileName(current.name);
 
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = projectFileName(current.name);
-    anchor.click();
-
-    URL.revokeObjectURL(url);
+    downloadBlob(blob, fileName);
+    setArchiveNotice({
+      tone: "success",
+      title: `Downloaded ${fileName} — document only, media not included.`,
+      details: [
+        "This project's media stays in this browser. To move the project and its media together, use Share (.desktopstage).",
+      ],
+    });
   }, []);
+
+  /**
+   * Portable export: the document, its manifest, and every original media blob.
+   *
+   * `exportProjectArchive` reads every referenced blob before writing anything,
+   * so an export that cannot be complete fails with the list of what is missing
+   * instead of producing a half-archive that would import with silent gaps.
+   */
+  const downloadArchive = useCallback(async () => {
+    if (archiveBusyRef.current) return;
+
+    const current = useEditorStore.getState().project;
+    beginArchive("exporting");
+
+    try {
+      const { blob, manifest } = await exportProjectArchive(current, {
+        store: store(),
+        appVersion: APP_VERSION,
+        onProgress: setArchiveProgress,
+      });
+
+      downloadBlob(blob, archiveFileName(current.name));
+      setLastArchiveBytes(blob.size);
+
+      const bundled = manifest.assets.filter((asset) => asset.bundled).length;
+      const warning = unbundledAssetNotice(manifest);
+
+      setArchiveNotice({
+        tone: "success",
+        title: `Shared "${manifest.projectName || current.name}" — ${bundled} media ${
+          bundled === 1 ? "file" : "files"
+        }, ${formatByteSize(blob.size)}.`,
+        details: warning ? [warning] : [],
+      });
+    } catch (error) {
+      setArchiveNotice(describeArchiveFailure(error, "export"));
+    } finally {
+      endArchive();
+    }
+  }, [beginArchive, endArchive, store]);
+
+  /**
+   * Archive import.
+   *
+   * The whole point of the ordering here is that `replaceProject` is the last
+   * statement before the success notice: `importProjectArchive` validates the
+   * archive, remaps the document, and stages every media blob under fresh keys
+   * first, deleting whatever it staged if anything fails. A corrupt archive, a
+   * missing asset, or a full disk therefore leaves the open project, and every
+   * media key it references, exactly as they were.
+   */
+  const importArchiveFile = useCallback(
+    async (file: File) => {
+      beginArchive("importing");
+
+      try {
+        const result = await importProjectArchive(file, {
+          store: store(),
+          onProgress: setArchiveProgress,
+        });
+
+        replaceProject(result.project);
+
+        const bundled = result.stagedMedia.length;
+        const warning = unbundledAssetNotice(result.manifest);
+        setLoadIssues([
+          ...result.migrations.map((entry) => `Migrated: ${entry}`),
+          ...result.issues.map((issue) => issue.message),
+          ...(warning ? [warning] : []),
+        ]);
+
+        setLastArchiveBytes(file.size);
+        setArchiveNotice({
+          tone: "success",
+          title: `Opened "${result.project.name}" from ${file.name} — ${bundled} media ${
+            bundled === 1 ? "file" : "files"
+          } restored, ${formatByteSize(file.size)}.`,
+          details: [],
+        });
+      } catch (error) {
+        setArchiveNotice(describeArchiveFailure(error, "import"));
+      } finally {
+        endArchive();
+      }
+    },
+    [beginArchive, endArchive, replaceProject, store],
+  );
 
   const openProjectFile = useCallback(
     async (file: File) => {
+      if (archiveBusyRef.current) return;
+
+      // Which reader gets the file is decided before anything is read in full:
+      // a name or type that says "archive" is never retried as JSON, so a
+      // corrupt ZIP cannot be "repaired" into a plausible empty project, and a
+      // JSON file that begins with the ZIP signature is not fed to the ZIP
+      // reader. Only a file whose name and type say nothing is sniffed.
+      const kind = classifyProjectFile(
+        { name: file.name, type: file.type },
+        await readFileHead(file),
+      );
+
+      if (kind === "archive") {
+        await importArchiveFile(file);
+        return;
+      }
+
+      if (kind === "unknown") {
+        setLoadIssues([UNKNOWN_PROJECT_FILE_MESSAGE]);
+        return;
+      }
+
       let text: string;
       try {
         text = await file.text();
@@ -288,7 +510,7 @@ export function useProjectPersistence(): ProjectPersistence {
       }
       setLoadIssues(messages);
     },
-    [replaceProject],
+    [importArchiveFile, replaceProject],
   );
 
   const acceptLegacyImport = useCallback(async () => {
@@ -349,7 +571,16 @@ export function useProjectPersistence(): ProjectPersistence {
     dismissIssues: () => setLoadIssues([]),
     saveNow,
     downloadProject,
+    downloadArchive,
     openProjectFile,
+    archive: {
+      phase: archivePhase,
+      progress: archiveProgress,
+      notice: archiveNotice,
+      dismissNotice: () => setArchiveNotice(null),
+      lastArchiveBytes,
+      isBusy: archivePhase !== "idle",
+    },
     legacyImport: {
       status: legacyStatus,
       error: legacyError,
