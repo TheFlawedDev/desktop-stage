@@ -13,7 +13,7 @@ style preference. See [`cutaway-architecture.md`](cutaway-architecture.md) for t
 | `packages/project-io`                 | Parsing, validation, migration, and the `.desktopstage` archive. Storage is injected.                                      |
 | `packages/media-engine`               | The `MediaBlobStore` interface and its IndexedDB implementation.                                                           |
 | `packages/desktop-engine`             | The Desktop Stage extension: versioned payloads, the version 1 converter, and the frame resolver preview and export share. |
-| `outputs/`                            | Plans and notes kept with the repository. Not build input.                                                                 |
+| `outputs/`                            | Local plans and notes; ignored by git. Not build input.                                                                    |
 
 ## Commands
 
