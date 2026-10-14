@@ -265,6 +265,44 @@ describe("resolveScene", () => {
     expect(scene.nodes.map((n) => n.clipId)).toEqual([backClip.id, frontClip.id]);
   });
 
+  it("regresses the z-index contract: earlier trackOrder entries draw in front", () => {
+    // The document stores `trackOrder` top-of-UI first; the resolver gives the
+    // first entry the *highest* z-index. This is the one behaviour an earlier
+    // comment got backwards, so it is pinned numerically rather than only by
+    // the order of the returned nodes.
+    const front = createTrack({ kind: "video", index: 0 });
+    const back = createTrack({ kind: "overlay", index: 1 });
+
+    // The front clip starts later, so a start-frame tiebreak must not decide it.
+    const frontClip = createClip({
+      trackId: front.id,
+      startFrame: 50,
+      durationFrames: 100,
+      content: videoContent(),
+    });
+    const backClip = createClip({
+      trackId: back.id,
+      startFrame: 0,
+      durationFrames: 100,
+      content: videoContent(),
+    });
+
+    const nodes = resolveScene(projectWith([front, back], [frontClip, backClip]), 60).nodes;
+    const frontNode = nodes.find((node) => node.clipId === frontClip.id)!;
+    const backNode = nodes.find((node) => node.clipId === backClip.id)!;
+
+    expect(frontNode.zIndex).toBeGreaterThan(backNode.zIndex);
+    // Within one track, the earlier clip still sorts below the later one.
+    const laterOnBack = createClip({
+      trackId: back.id,
+      startFrame: 10,
+      durationFrames: 100,
+      content: videoContent(),
+    });
+    const sameTrack = resolveScene(projectWith([back], [backClip, laterOnBack]), 60).nodes;
+    expect(sameTrack.map((node) => node.clipId)).toEqual([backClip.id, laterOnBack.id]);
+  });
+
   it("omits clips on hidden tracks and hidden clips", () => {
     const track = createTrack({ kind: "video", index: 0 });
     const hiddenTrack: Track = { ...track, hidden: true };

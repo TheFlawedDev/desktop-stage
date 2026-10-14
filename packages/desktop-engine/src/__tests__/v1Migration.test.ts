@@ -160,6 +160,31 @@ describe("convertV1Project", () => {
     expect(evaluate(code.transform.position, 15).y).toBeCloseTo(-200, 6);
   });
 
+  it("clamps end-of-timeline keyframes and keeps the later of two that collide", () => {
+    const fixture = starterV1Project();
+    const project = convertV1Project({
+      ...fixture,
+      keyframes: {
+        code: [
+          { time: 0, values: { x: 0, y: 0, width: 100, height: 100, opacity: 1, scale: 1 } },
+          { time: 20_000, values: { x: 100, y: 0, width: 100, height: 100, opacity: 1, scale: 1 } },
+          // 20_000 ms and 20_400 ms both round past the last frame, so both
+          // clamp to 599; the later prototype keyframe wins.
+          { time: 20_400, values: { x: 200, y: 0, width: 100, height: 100, opacity: 1, scale: 1 } },
+        ],
+      },
+    });
+    const code = clipFor(project, "app-code");
+    const position = code.transform.position;
+
+    expect(position.type).toBe("animated");
+    if (position.type !== "animated") return;
+
+    expect(position.keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 599]);
+    // 100 × 100 at x = 200: centre-of-composition is (200 + 50 − 500, 0 + 50 − 300).
+    expect(position.keyframes[1]!.value).toEqual({ x: -250, y: -250 });
+  });
+
   it("reproduces the prototype's smoothstep easing exactly", () => {
     const project = convertV1Project(animatedFixture());
     const code = clipFor(project, "app-code");

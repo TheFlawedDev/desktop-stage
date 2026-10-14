@@ -26,7 +26,15 @@
  */
 
 import type { MediaAsset, ProjectDocument } from "@cutaway/types";
-import { BlobReader, BlobWriter, TextReader, ZipReader, ZipWriter } from "@zip.js/zip.js";
+import {
+  BlobReader,
+  BlobWriter,
+  TextReader,
+  ZipReader,
+  ZipWriter,
+  type Entry,
+  type FileEntry,
+} from "@zip.js/zip.js";
 import { migrateDocument } from "./migrate";
 import { parseProjectFile } from "./serialize";
 import { validateProject, type ValidationIssue } from "./validate";
@@ -336,6 +344,22 @@ function uniqueImportedKey(mediaId: string, index: number): string {
 }
 
 /**
+ * Reads an archive's central directory.
+ *
+ * A truncated, encrypted, or simply unrelated file is not a zip at all; that is
+ * reported as an `ArchiveError` so a caller only has to handle one error type.
+ */
+async function readArchiveEntries(reader: ZipReader<Blob>): Promise<Entry[]> {
+  try {
+    return await reader.getEntries();
+  } catch (error) {
+    throw new ArchiveError("invalid-archive", "The file is not a readable ZIP archive.", [
+      error instanceof Error ? error.message : String(error),
+    ]);
+  }
+}
+
+/**
  * Reads a `.desktopstage` archive and stages its media.
  *
  * Returns a document whose media sources point at the newly staged keys. The
@@ -346,12 +370,20 @@ export async function importProjectArchive(
   archive: Blob,
   options: ArchiveImportOptions,
 ): Promise<ArchiveImportResult> {
-  const reader = new ZipReader(new BlobReader(archive));
+  // `filenameValidation: "tolerant"` keeps zip.js from rejecting an unusual name
+  // before this module can: `validateEntryName` below is the authority on what a
+  // Desktop Stage archive may contain, and it reports exactly what was wrong. A
+  // name is only ever used as a map key, never as a filesystem path, so being
+  // permissive here is not a traversal risk.
+  const reader = new ZipReader(new BlobReader(archive), { filenameValidation: "tolerant" });
   const staged: { mediaId: string; key: string }[] = [];
 
   try {
-    const entries = await reader.getEntries();
-    const byName = new Map<string, (typeof entries)[number]>();
+    const entries = await readArchiveEntries(reader);
+
+    // Only file entries carry data. Directories are dropped here so that every
+    // later `getData` call is provably on a file, not on the `Entry` union.
+    const byName = new Map<string, FileEntry>();
 
     for (const entry of entries) {
       if (entry.directory) continue;
@@ -370,7 +402,10 @@ export async function importProjectArchive(
       throw new ArchiveError("invalid-archive", "The archive has no manifest.json.");
     }
 
-    const manifest = parseManifest(await manifestEntry.getData(new BlobWriter("application/json")));
+    const manifestText = await (
+      await manifestEntry.getData(new BlobWriter("application/json"))
+    ).text();
+    const manifest = parseManifest(manifestText);
 
     const projectEntry = byName.get(ARCHIVE_PROJECT_NAME);
     if (!projectEntry) {

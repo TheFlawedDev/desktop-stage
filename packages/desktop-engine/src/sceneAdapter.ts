@@ -15,11 +15,21 @@
  * every seek across the cut.
  */
 
-import type { ProjectDocument, Scene, SceneNode, Size } from "@cutaway/types";
-import { DESKTOP_WINDOW_CONTENT_TYPE } from "@cutaway/types";
-import { resolveScene } from "@cutaway/render-engine";
+import { DESKTOP_WINDOW_CONTENT_TYPE, type ProjectDocument, type Size } from "@cutaway/types";
+// `Scene` and `SceneNode` are the resolver's output types, so they come from the
+// render engine that defines them — `@cutaway/types` deliberately has no
+// dependency on a resolved frame.
+import { resolveScene, type Scene, type SceneNode } from "@cutaway/render-engine";
 import { isDesktopContentType } from "./project";
 import { resolveDesktopFrame, type ResolvedDesktopApp, type ResolvedDesktopFrame } from "./resolveDesktopFrame";
+
+/**
+ * The content type stamped onto every node this adapter emits.
+ *
+ * Re-exported so a consumer that receives a node from here can recognise it
+ * without a second import from `@cutaway/types`.
+ */
+export { DESKTOP_WINDOW_CONTENT_TYPE };
 
 /**
  * Per-track z stride.
