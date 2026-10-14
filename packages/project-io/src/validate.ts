@@ -68,6 +68,7 @@ import {
   parseDesktopContent,
   trackKindsForFamily,
 } from "@desktop-stage/desktop-engine";
+import { setOwn } from "./own";
 
 export type IssueSeverity =
   /** Content could not be understood and is gone. */
@@ -115,17 +116,6 @@ function isOneOf<T extends string>(value: unknown, options: readonly T[]): value
 
 function isFiniteVec2(value: unknown): value is { x: number; y: number } {
   return isRecord(value) && isFiniteNumber(value.x) && isFiniteNumber(value.y);
-}
-
-/**
- * Writes an own property onto a map built from user data.
- *
- * A plain `map["__proto__"] = value` assignment invokes the `Object.prototype`
- * setter instead of storing anything, silently replacing the map's prototype.
- * Entity ids come straight from the file, so they get the explicit write.
- */
-function setOwn<T>(map: Record<string, T>, key: string, value: T): void {
-  Object.defineProperty(map, key, { value, enumerable: true, writable: true, configurable: true });
 }
 
 const BLEND_MODES: readonly BlendMode[] = [
@@ -1108,6 +1098,11 @@ function repairMasks(raw: unknown, subject: string, issues: ValidationIssue[]): 
  * Nothing consumes `Mask.motionPath` yet, which is exactly why losing it would
  * go unnoticed: the loss only shows up on the *next* save, once the project on
  * disk has been rewritten without it.
+ *
+ * Points are repaired **in place** — an unreadable point is reset to the origin,
+ * never removed — so the authored handle for `points[i]` still belongs to that
+ * index. Filtering a point out instead would silently re-associate every later
+ * handle with the wrong point, which is worse than the loss the filter reports.
  */
 function repairMotionPath(
   raw: unknown,
@@ -1125,9 +1120,30 @@ function repairMotionPath(
     return null;
   }
 
-  const points = Array.isArray(raw.points)
-    ? raw.points.filter(isFiniteVec2).map((point) => ({ x: point.x, y: point.y }))
-    : [];
+  const rawPoints = Array.isArray(raw.points) ? raw.points : [];
+  const points: Vec2[] = [];
+  let resetPoints = 0;
+
+  for (const candidate of rawPoints) {
+    if (isFiniteVec2(candidate)) {
+      points.push({ x: candidate.x, y: candidate.y });
+    } else {
+      resetPoints += 1;
+      points.push({ x: 0, y: 0 });
+    }
+  }
+
+  if (resetPoints > 0) {
+    issues.push({
+      severity: "repaired",
+      subject,
+      message: `Mask motion path had ${resetPoints} unreadable point${
+        resetPoints === 1 ? "" : "s"
+      }, which ${
+        resetPoints === 1 ? "was" : "were"
+      } reset to the origin so its handles stayed attached to the right point.`,
+    });
+  }
 
   if (points.length === 0) {
     issues.push({
@@ -1140,7 +1156,7 @@ function repairMotionPath(
 
   return {
     points,
-    handles: repairHandles(raw.handles, "motion path", subject, issues),
+    handles: repairHandles(raw.handles, "motion path", subject, issues, points.length),
     closed: asBoolean(raw.closed, false),
     orientToPath: asBoolean(raw.orientToPath, false),
     progress: repairAnimatable(raw.progress, 1, "motion path progress", subject, issues),
@@ -1153,37 +1169,47 @@ function repairMotionPath(
  * These are authored pen-tool data. `mask-engine` tessellates the polyline and
  * ignores them today, so replacing the array with `[]` looks harmless right
  * after load and permanently discards the author's curves on the next save.
+ *
+ * `expectedCount` is the number of points or vertices they belong to. Handles
+ * are never filtered or shifted: an entry that cannot be read is reset in place
+ * so index `i` still means "the handle for point `i`", and the array is padded
+ * or truncated to match rather than trusting the file. A mismatch is reported,
+ * because a shorter array means any reader indexing `handles[i]` gets
+ * `undefined`, and a longer one means trailing authored data was dropped.
  */
 function repairHandles(
   raw: unknown,
   label: string,
   subject: string,
   issues: ValidationIssue[],
+  expectedCount: number,
 ): { in: Vec2; out: Vec2 }[] {
-  if (raw === undefined) return [];
+  let repaired = 0;
 
-  if (!Array.isArray(raw)) {
+  const handles: { in: Vec2; out: Vec2 }[] =
+    raw === undefined
+      ? []
+      : Array.isArray(raw)
+        ? raw.map((candidate): { in: Vec2; out: Vec2 } => {
+            if (isRecord(candidate) && isFiniteVec2(candidate.in) && isFiniteVec2(candidate.out)) {
+              return {
+                in: { x: candidate.in.x, y: candidate.in.y },
+                out: { x: candidate.out.x, y: candidate.out.y },
+              };
+            }
+
+            repaired += 1;
+            return { in: { x: 0, y: 0 }, out: { x: 0, y: 0 } };
+          })
+        : [];
+
+  if (raw !== undefined && !Array.isArray(raw)) {
     issues.push({
       severity: "repaired",
       subject,
       message: `Mask ${label} handles were not an array and have been reset.`,
     });
-    return [];
   }
-
-  let repaired = 0;
-
-  const handles = raw.map((candidate): { in: Vec2; out: Vec2 } => {
-    if (isRecord(candidate) && isFiniteVec2(candidate.in) && isFiniteVec2(candidate.out)) {
-      return {
-        in: { x: candidate.in.x, y: candidate.in.y },
-        out: { x: candidate.out.x, y: candidate.out.y },
-      };
-    }
-
-    repaired += 1;
-    return { in: { x: 0, y: 0 }, out: { x: 0, y: 0 } };
-  });
 
   if (repaired > 0) {
     issues.push({
@@ -1192,6 +1218,26 @@ function repairHandles(
       message: `Mask ${label} had ${repaired} unreadable handle${
         repaired === 1 ? "" : "s"
       }, which were reset.`,
+    });
+  }
+
+  if (handles.length !== expectedCount) {
+    const supplied = handles.length;
+    if (supplied > expectedCount) handles.length = expectedCount;
+    else {
+      while (handles.length < expectedCount) {
+        handles.push({ in: { x: 0, y: 0 }, out: { x: 0, y: 0 } });
+      }
+    }
+
+    issues.push({
+      severity: "repaired",
+      subject,
+      message: `Mask ${label} had ${supplied} handle${
+        supplied === 1 ? "" : "s"
+      } for ${expectedCount} point${expectedCount === 1 ? "" : "s"}, so the list was ${
+        supplied > expectedCount ? "truncated" : "padded"
+      } to match.`,
     });
   }
 
@@ -1247,7 +1293,7 @@ function repairMaskShape(
   return {
     kind: "path",
     vertices,
-    handles: repairHandles(raw.handles, "path", subject, issues),
+    handles: repairHandles(raw.handles, "path", subject, issues, vertices.length),
     closed: asBoolean(raw.closed, true),
   };
 }
