@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import { evaluate } from "@cutaway/animation-engine";
 import { DESKTOP_CONTENT_TYPES } from "@cutaway/types";
 import type { DesktopAppPayload, ProjectDocument } from "@cutaway/types";
-import { convertV1Project, convertV1ProjectChecked, v1TimeToFrame } from "../migrateV1";
+import {
+  convertV1Project,
+  convertV1ProjectChecked,
+  v1TimeToFrame,
+  V1_PROJECT_ID,
+} from "../migrateV1";
 import { createStarterProject, starterV1Project } from "../starterProject";
 import { isV1Project } from "../v1";
 import { parseDesktopContent } from "../project";
@@ -275,5 +280,22 @@ describe("createStarterProject", () => {
 
   it("returns a fresh object each call", () => {
     expect(createStarterProject()).not.toBe(createStarterProject());
+  });
+
+  it("mints a fresh project id but keeps the scene's own ids stable", () => {
+    // The store keys records by project id, so two starter projects sharing an
+    // id would overwrite each other: "New project" would destroy the project it
+    // replaced. The scene inside stays deterministic, so the starter is still a
+    // reproducible example.
+    const first = createStarterProject();
+    const second = createStarterProject();
+
+    expect(first.id).not.toBe(second.id);
+    expect(first.id).not.toBe(V1_PROJECT_ID);
+    expect(Object.keys(first.entities.clips).sort()).toEqual(
+      Object.keys(second.entities.clips).sort(),
+    );
+    expect(first.entities.tracks).toEqual(second.entities.tracks);
+    expect(first.trackOrder).toEqual(second.trackOrder);
   });
 });

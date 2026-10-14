@@ -13,7 +13,7 @@
 
 import type { Clip, DesktopActionPayload, ProjectDocument } from "@cutaway/types";
 import { DESKTOP_CONTENT_TYPES } from "@cutaway/types";
-import { createClip } from "@cutaway/utils";
+import { createClip, createId } from "@cutaway/utils";
 import starterFixture from "./__fixtures__/v1-starter-project.json";
 import { convertV1Project, V1_ACTION_TRACK_ID, V1_DURATION_FRAMES, V1_DESKTOP_TRACK_ID } from "./migrateV1";
 import { isV1Project } from "./v1";
@@ -101,9 +101,21 @@ function createActionClip(action: StarterAction): Clip {
   });
 }
 
-/** Builds the starter scene. Fresh objects every call, safe to mutate. */
+/**
+ * Builds the starter scene. Fresh objects every call, safe to mutate.
+ *
+ * The project **id** is fresh on every call, while every id inside the scene —
+ * tracks, clips, and app instances — stays deterministic. That split matters for
+ * persistence: the store keys records by `project.id`, so two projects sharing
+ * the starter's id would overwrite each other. Minting an id here means "New
+ * project" (and a cold start) can never collide with a project already saved,
+ * and the conversion path stays reproducible for the same scene.
+ */
 export function createStarterProject(): ProjectDocument {
-  const converted = convertV1Project(starterV1Project(), { name: STARTER_PROJECT_NAME });
+  const converted = convertV1Project(starterV1Project(), {
+    name: STARTER_PROJECT_NAME,
+    projectId: createId("project"),
+  });
 
   const clips = { ...converted.entities.clips };
   for (const action of STARTER_ACTIONS) clips[action.id] = createActionClip(action);
