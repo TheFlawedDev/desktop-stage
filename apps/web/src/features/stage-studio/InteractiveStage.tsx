@@ -502,8 +502,13 @@ export const InteractiveStage = forwardRef<
     const DPR = 2; // 2x supersampling for high-DPI crisp text and vector rendering
     canvas.width = recRect.width * DPR;
     canvas.height = recRect.height * DPR;
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", {
+      alpha: false,
+      desynchronized: true,
+    });
     if (!ctx) return;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
 
     const applePath = new Path2D(APPLE_SVG_PATH);
     let running = true;
@@ -517,12 +522,12 @@ export const InteractiveStage = forwardRef<
       ctx.save();
       ctx.scale(DPR, DPR);
 
-      // 1. Desktop Wallpaper Background - unified royal blue gradient
+      // 1. Desktop Wallpaper Background - aligned to global stage coordinates
       const bgGrad = ctx.createLinearGradient(
-        0,
-        0,
-        recRect.width,
-        recRect.height,
+        -recRect.x,
+        -recRect.y,
+        STAGE_WIDTH - recRect.x,
+        STAGE_HEIGHT - recRect.y,
       );
       bgGrad.addColorStop(0, "#1e1b4b");
       bgGrad.addColorStop(0.4, "#312e81");
@@ -530,14 +535,14 @@ export const InteractiveStage = forwardRef<
       ctx.fillStyle = bgGrad;
       ctx.fillRect(0, 0, recRect.width, recRect.height);
 
-      // Ambient desktop nebula glow
+      // Ambient desktop nebula glow - aligned to global stage coordinates
       const orbGrad = ctx.createRadialGradient(
-        recRect.width * 0.7 - recRect.x,
-        recRect.height * 0.3 - recRect.y,
+        STAGE_WIDTH * 0.7 - recRect.x,
+        STAGE_HEIGHT * 0.3 - recRect.y,
         20,
-        recRect.width * 0.7 - recRect.x,
-        recRect.height * 0.3 - recRect.y,
-        Math.max(200, recRect.width * 0.5),
+        STAGE_WIDTH * 0.7 - recRect.x,
+        STAGE_HEIGHT * 0.3 - recRect.y,
+        Math.max(200, STAGE_WIDTH * 0.5),
       );
       orbGrad.addColorStop(0, "rgba(99, 102, 241, 0.25)");
       orbGrad.addColorStop(1, "rgba(0, 0, 0, 0)");
@@ -1082,15 +1087,23 @@ export const InteractiveStage = forwardRef<
 
     try {
       const stream = canvas.captureStream(60);
-      const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
-        ? "video/webm;codecs=vp9"
-        : MediaRecorder.isTypeSupported("video/webm;codecs=vp8")
-          ? "video/webm;codecs=vp8"
-          : "video/webm";
+      const candidates = [
+        "video/webm;codecs=vp9,opus",
+        "video/webm;codecs=vp9",
+        "video/webm;codecs=vp8,opus",
+        "video/webm;codecs=vp8",
+        "video/webm",
+      ];
+      const mimeType =
+        candidates.find(
+          (m) =>
+            typeof MediaRecorder !== "undefined" &&
+            MediaRecorder.isTypeSupported(m),
+        ) || "video/webm";
 
       const recorder = new MediaRecorder(stream, {
         mimeType,
-        videoBitsPerSecond: 12_000_000, // 12 Mbps for razor-sharp text and retina resolution
+        videoBitsPerSecond: 28_000_000, // 28 Mbps ultra-crisp 4K/retina recording for sharp text & vectors
       });
       recordedChunksRef.current = [];
 
@@ -1108,10 +1121,10 @@ export const InteractiveStage = forwardRef<
 
       stageDiagnostics.log(
         "RECORDER",
-        `MediaRecorder started: 60 FPS, 12 Mbps (${mimeType}) on ${recRect.width}x${recRect.height} (2x canvas ${canvas.width}x${canvas.height})`,
+        `MediaRecorder started: 60 FPS, 28 Mbps (${mimeType}) on ${recRect.width}x${recRect.height} (2x canvas ${canvas.width}x${canvas.height})`,
       );
       stageDiagnostics.updateMetrics({
-        bitrateMbps: 12,
+        bitrateMbps: 28,
         encoderMime: mimeType,
         totalChunks: 0,
       });
@@ -1162,6 +1175,10 @@ export const InteractiveStage = forwardRef<
           recordingRect: resolved,
           startedAtMs: now,
         });
+        lastPointerPosRef.current = {
+          x: resolved.x + Math.round(resolved.width / 2),
+          y: resolved.y + Math.round(resolved.height / 2),
+        };
 
         startCanvasRecording(resolved);
         setIsRecording(true);

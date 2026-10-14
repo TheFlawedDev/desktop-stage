@@ -152,11 +152,11 @@ export function PreviewPanel() {
       }
 
       setLastTake(manifest);
-      setTrackMouseEnabled(true);
+      setTrackMouseEnabled(false);
       setPreviewScrubMs(0);
 
       setTakeNotice(
-        `Take recorded (${(manifest.durationMs / 1000).toFixed(1)}s) & 1.5× mouse follow enabled!`,
+        `Take recorded (${(manifest.durationMs / 1000).toFixed(1)}s) added to timeline`,
       );
       setTimeout(() => setTakeNotice(null), 5000);
 
@@ -195,6 +195,9 @@ export function PreviewPanel() {
     fps,
   ]);
 
+  const shouldApplyCameraFollow =
+    workspaceMode === "preview" && trackMouseEnabled && Boolean(cameraView);
+
   return (
     <div className="bg-surface-base flex h-full flex-col">
       {/* Central Canvas Workspace */}
@@ -212,16 +215,22 @@ export function PreviewPanel() {
             <div
               className="relative h-full w-full"
               style={
-                trackMouseEnabled && cameraView
+                shouldApplyCameraFollow && cameraView
                   ? (() => {
                       const baseW = lastTake?.recordingRect.width || 1280;
                       const baseH = lastTake?.recordingRect.height || 720;
-                      const vpCenterX =
-                        cameraView.viewport.x + cameraView.viewport.width / 2;
-                      const vpCenterY =
-                        cameraView.viewport.y + cameraView.viewport.height / 2;
-                      const rawDx = ((baseW / 2 - vpCenterX) / baseW) * 100;
-                      const rawDy = ((baseH / 2 - vpCenterY) / baseH) * 100;
+                      const cropOriginX = lastTake?.recordingRect.x || 0;
+                      const cropOriginY = lastTake?.recordingRect.y || 0;
+                      const localVpCenterX =
+                        cameraView.viewport.x +
+                        cameraView.viewport.width / 2 -
+                        cropOriginX;
+                      const localVpCenterY =
+                        cameraView.viewport.y +
+                        cameraView.viewport.height / 2 -
+                        cropOriginY;
+                      const rawDx = ((baseW / 2 - localVpCenterX) / baseW) * 100;
+                      const rawDy = ((baseH / 2 - localVpCenterY) / baseH) * 100;
 
                       // Prevent camera from panning outside stage boundary
                       const maxShiftX =
@@ -280,7 +289,7 @@ export function PreviewPanel() {
             </div>
 
             {/* 1.5x Camera Active Indicator Overlay */}
-            {trackMouseEnabled && cameraView && (
+            {shouldApplyCameraFollow && (
               <div className="pointer-events-none absolute top-3 left-3 z-40 flex items-center gap-1.5 rounded-full bg-emerald-500/90 px-3 py-1 text-2xs font-semibold text-black shadow-lg backdrop-blur-xs animate-fade-in">
                 <Sparkles size={12} className="fill-current" />
                 <span>1.5× MOUSE FOLLOW ACTIVE</span>

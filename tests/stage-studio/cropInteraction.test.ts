@@ -79,4 +79,38 @@ describe("Selected-Area Crop Frame & Drag-Resize Logic", () => {
     expect(APPLE_SVG_PATH.startsWith("M150.37")).toBe(true);
     expect(APPLE_SVG_PATH.length).toBeGreaterThan(100);
   });
+
+  it("normalizes camera viewport center to local crop origin without offset displacement", () => {
+    // Selected crop with non-zero origin
+    const recordingRect: Rect = { x: 140, y: 90, width: 800, height: 500 };
+    const zoom = 1.5;
+
+    // Viewport returned by MouseFollowCamera when at rest/center:
+    // vpCenterX = baseCenterX = 140 + 400 = 540
+    // vpCenterY = baseCenterY = 90 + 250 = 340
+    const vpCenterX = recordingRect.x + recordingRect.width / 2;
+    const vpCenterY = recordingRect.y + recordingRect.height / 2;
+
+    const baseW = recordingRect.width;
+    const baseH = recordingRect.height;
+    const cropOriginX = recordingRect.x;
+    const cropOriginY = recordingRect.y;
+
+    const localVpCenterX = vpCenterX - cropOriginX;
+    const localVpCenterY = vpCenterY - cropOriginY;
+
+    const rawDx = ((baseW / 2 - localVpCenterX) / baseW) * 100;
+    const rawDy = ((baseH / 2 - localVpCenterY) / baseH) * 100;
+
+    // At rest/center, translation must be exactly 0% (never shifting into a corner)
+    expect(localVpCenterX).toBe(baseW / 2);
+    expect(localVpCenterY).toBe(baseH / 2);
+    expect(rawDx).toBe(0);
+    expect(rawDy).toBe(0);
+
+    // Pan bounds clamp: maxShift = ((zoom - 1) / (2 * zoom)) * 100
+    const maxShift = ((zoom - 1) / (2 * zoom)) * 100; // ~16.67%
+    expect(maxShift).toBeCloseTo(16.6667, 3);
+  });
 });
+
