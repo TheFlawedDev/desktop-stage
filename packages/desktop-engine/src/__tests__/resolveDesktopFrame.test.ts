@@ -235,6 +235,22 @@ describe("scene adapter", () => {
     }
   });
 
+  it("keeps the drawable window node and strips only authored placeholders", () => {
+    const [windowNode] = desktopWindowsToSceneNodes(resolveDesktopFrame(project, 0), project);
+
+    expect(windowNode).toBeDefined();
+    expect(windowNode!.content).toMatchObject({ kind: "plugin", contentType: DESKTOP_WINDOW_CONTENT_TYPE });
+    expect(isDesktopPlaceholder(windowNode!)).toBe(false);
+
+    // An authored family clip is still a placeholder the adapter replaces.
+    expect(
+      isDesktopPlaceholder({
+        ...windowNode!,
+        content: { kind: "plugin", contentType: DESKTOP_CONTENT_TYPES.cursor, data: {} },
+      }),
+    ).toBe(true);
+  });
+
   it("keys nodes by instance id so a split clip keeps one display object", () => {
     const ids = resolveDesktopScene(project, 0).nodes.map((node) => node.clipId).sort();
     expect(ids).toEqual([

@@ -20,7 +20,7 @@ import { DESKTOP_WINDOW_CONTENT_TYPE, type ProjectDocument, type Size } from "@c
 // render engine that defines them — `@cutaway/types` deliberately has no
 // dependency on a resolved frame.
 import { resolveScene, type Scene, type SceneNode } from "@cutaway/render-engine";
-import { isDesktopContentType } from "./project";
+import { desktopFamilyFor, type DesktopPayloadFamily } from "./project";
 import { resolveDesktopFrame, type ResolvedDesktopApp, type ResolvedDesktopFrame } from "./resolveDesktopFrame";
 
 /**
@@ -92,9 +92,26 @@ export function readDesktopWindowPayload(data: unknown): DesktopWindowNodePayloa
   };
 }
 
+/**
+ * The authored plugin families the generic resolver emits placeholders for.
+ *
+ * Deliberately narrower than the whole `desktop-stage/` prefix: the drawable
+ * `desktop-stage/app-window@1` node this adapter emits shares that prefix but
+ * names no authored family, so it must survive this filter.
+ */
+const AUTHORED_PLACEHOLDER_FAMILIES: readonly DesktopPayloadFamily[] = [
+  "app",
+  "action",
+  "cursor",
+  "camera",
+];
+
 /** True for a generic-resolver placeholder that this adapter replaces. */
 export function isDesktopPlaceholder(node: SceneNode): boolean {
-  return node.content.kind === "plugin" && isDesktopContentType(node.content.contentType);
+  if (node.content.kind !== "plugin") return false;
+
+  const family = desktopFamilyFor(node.content.contentType);
+  return family !== null && AUTHORED_PLACEHOLDER_FAMILIES.includes(family);
 }
 
 /** Drawable nodes for the desktop's visible app windows, back to front. */
