@@ -11,7 +11,7 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+    "clean": "node ../../scripts/clean.mjs dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
     "@cutaway/animation-engine": "workspace:*",

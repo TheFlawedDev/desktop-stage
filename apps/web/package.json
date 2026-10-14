@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf .next .turbo *.tsbuildinfo"
+    "clean": "node ../../scripts/clean.mjs .next .turbo *.tsbuildinfo"
   },
   "dependencies": {
     "@cutaway/animation-engine": "workspace:*",

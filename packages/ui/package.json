@@ -9,7 +9,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+    "clean": "node ../../scripts/clean.mjs dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
     "clsx": "^2.1.1",
