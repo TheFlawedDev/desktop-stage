@@ -220,6 +220,43 @@ describe("convertV1Project", () => {
   });
 });
 
+describe("prototype-chain safety", () => {
+  it("treats a window id that shadows a prototype member as having no keyframes", () => {
+    const fixture = starterV1Project();
+    const hostile: V1Project = {
+      version: 1,
+      windows: [{ ...fixture.windows[0]!, id: "constructor" }],
+      keyframes: {},
+    };
+
+    expect(isV1Project(hostile)).toBe(true);
+    // `keyframes["constructor"]` resolves to Object.prototype.constructor unless
+    // the lookup is guarded; the converter would then iterate a function.
+    expect(() => convertV1Project(hostile)).not.toThrow();
+
+    const clip = Object.values(convertV1Project(hostile).entities.clips)[0]!;
+    expect(clip.transform.position.type).toBe("static");
+  });
+
+  it("still reads an own keyframe entry whose id shadows a prototype member", () => {
+    const fixture = starterV1Project();
+    const values = { x: 0, y: 0, width: 100, height: 100, opacity: 1, scale: 1 };
+    const project: V1Project = {
+      version: 1,
+      windows: [{ ...fixture.windows[0]!, id: "constructor" }],
+      keyframes: {
+        constructor: [
+          { time: 0, values },
+          { time: 1000, values: { ...values, x: 200 } },
+        ],
+      },
+    };
+
+    const clip = Object.values(convertV1Project(project).entities.clips)[0]!;
+    expect(clip.transform.position.type).toBe("animated");
+  });
+});
+
 describe("createStarterProject", () => {
   it("contains the converted windows plus authored action clips", () => {
     const project = createStarterProject();

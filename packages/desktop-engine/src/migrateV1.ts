@@ -151,7 +151,7 @@ function createIdFactory() {
 function orderedKeyframes(
   frames: V1Keyframe[] | undefined,
 ): { frame: Frame; values: V1AnimatedValues }[] {
-  if (!frames?.length) return [];
+  if (!Array.isArray(frames) || frames.length === 0) return [];
 
   const byFrame = new Map<Frame, V1AnimatedValues>();
   for (const keyframe of [...frames].sort((a, b) => a.time - b.time)) {
@@ -235,7 +235,14 @@ export function convertV1Project(
     const instanceId = nextId(`app-${slugify(window.id)}`);
     const clipId = nextId(`clip-${instanceId}`);
 
-    const keyframes = orderedKeyframes(project.keyframes[window.id]);
+    // Window ids are user data and may collide with `Object.prototype` names
+    // such as "constructor". Reading through the prototype chain would hand the
+    // converter a function where a keyframe list belongs, so only an *own*
+    // property counts.
+    const windowKeyframes = Object.prototype.hasOwnProperty.call(project.keyframes, window.id)
+      ? project.keyframes[window.id]
+      : undefined;
+    const keyframes = orderedKeyframes(windowKeyframes);
 
     // With keyframes the prototype ignored the window's own values entirely;
     // without them it used them as constants. Both cases are reproduced here.
