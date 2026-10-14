@@ -464,6 +464,41 @@ describe("validateProject repair", () => {
     expect(params.falloff).toEqual({ type: "static", value: [0, 1] });
     expect(params.broken).toEqual({ type: "static", value: 0 });
   });
+
+  it("reports enum repairs instead of applying them silently", () => {
+    const project = populatedProject();
+    const clipId = Object.keys(project.entities.clips)[0]!;
+    const clip = project.entities.clips[clipId]!;
+
+    const { project: repaired, issues } = validateProject({
+      ...project,
+      entities: {
+        ...project.entities,
+        clips: {
+          [clipId]: {
+            ...clip,
+            content: { kind: "text", text: "hi", align: "middle" },
+            effects: "nope",
+            masks: [{ id: "mask-1", shape: { kind: "rectangle" }, mode: "multiply" }],
+          },
+        },
+      },
+    });
+
+    expect(repaired.entities.clips[clipId]!.effects).toEqual([]);
+    expect(issues.some((i) => /alignment/i.test(i.message))).toBe(true);
+    expect(issues.some((i) => /unrecognised mode/i.test(i.message))).toBe(true);
+    expect(issues.some((i) => /effect stack/i.test(i.message))).toBe(true);
+
+    const shapes = validateProject({
+      ...project,
+      entities: {
+        ...project.entities,
+        clips: { [clipId]: { ...clip, content: { kind: "shape", shape: "hexagon" } } },
+      },
+    });
+    expect(shapes.issues.some((i) => /shape kind/i.test(i.message))).toBe(true);
+  });
 });
 
 describe("validateProject totality on malformed JSON", () => {

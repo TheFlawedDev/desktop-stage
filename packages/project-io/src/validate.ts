@@ -1067,6 +1067,15 @@ function repairMasks(raw: unknown, subject: string, issues: ValidationIssue[]): 
     const shape = repairMaskShape(candidate.shape, candidate.id, subject, issues);
     if (!shape) return;
 
+    const mode = isOneOf(candidate.mode, MASK_MODES) ? candidate.mode : "add";
+    if (mode !== candidate.mode) {
+      issues.push({
+        severity: "repaired",
+        subject,
+        message: `Mask "${candidate.id}" had an unrecognised mode and was set to add.`,
+      });
+    }
+
     const motionPath = repairMotionPath(candidate.motionPath, subject, issues);
 
     masks.push({
@@ -1074,7 +1083,7 @@ function repairMasks(raw: unknown, subject: string, issues: ValidationIssue[]): 
       name: asString(candidate.name, "Mask"),
       enabled: asBoolean(candidate.enabled, true),
       shape,
-      mode: isOneOf(candidate.mode, MASK_MODES) ? candidate.mode : "add",
+      mode,
       feather: repairAnimatable(candidate.feather, 0, "mask feather", subject, issues),
       expand: repairAnimatable(candidate.expand, 0, "mask expand", subject, issues),
       opacity: repairAnimatable(candidate.opacity, 1, "mask opacity", subject, issues),
@@ -1241,7 +1250,16 @@ function repairEffects(
   subject: string,
   issues: ValidationIssue[],
 ): EffectInstance[] {
-  if (!Array.isArray(raw)) return [];
+  if (!Array.isArray(raw)) {
+    if (raw !== undefined) {
+      issues.push({
+        severity: "repaired",
+        subject,
+        message: "Effect stack was not an array and has been reset.",
+      });
+    }
+    return [];
+  }
 
   const effects: EffectInstance[] = [];
 
@@ -1462,6 +1480,15 @@ function repairContent(
       const stroke = isRecord(raw.stroke) ? raw.stroke : {};
       const background = isRecord(raw.background) ? raw.background : {};
 
+      const align = isOneOf(raw.align, TEXT_ALIGNS) ? raw.align : "center";
+      if (align !== raw.align) {
+        issues.push({
+          severity: "repaired",
+          subject,
+          message: "Text alignment was not recognisable and was set to center.",
+        });
+      }
+
       return {
         kind: "text",
         text: asString(raw.text, ""),
@@ -1470,7 +1497,7 @@ function repairContent(
         fontWeight: asFiniteNumber(raw.fontWeight, 400),
         italic: asBoolean(raw.italic, false),
         color: repairAnimatable(raw.color, "#ffffff", "text colour", subject, issues),
-        align: isOneOf(raw.align, TEXT_ALIGNS) ? raw.align : "center",
+        align,
         lineHeight: asFiniteNumber(raw.lineHeight, 1.2),
         letterSpacing: repairAnimatable(raw.letterSpacing, 0, "letter spacing", subject, issues),
         stroke: {
@@ -1491,9 +1518,18 @@ function repairContent(
     case "shape": {
       const stroke = isRecord(raw.stroke) ? raw.stroke : {};
 
+      const shape = isOneOf(raw.shape, SHAPE_KINDS) ? raw.shape : "rectangle";
+      if (shape !== raw.shape) {
+        issues.push({
+          severity: "repaired",
+          subject,
+          message: "Shape kind was not recognisable and was set to rectangle.",
+        });
+      }
+
       return {
         kind: "shape",
-        shape: isOneOf(raw.shape, SHAPE_KINDS) ? raw.shape : "rectangle",
+        shape,
         fill: repairAnimatable(raw.fill, "#ffffff", "shape fill", subject, issues),
         stroke: {
           enabled: asBoolean(stroke.enabled, false),
