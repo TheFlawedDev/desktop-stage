@@ -349,6 +349,43 @@ describe("validateProject totality on malformed JSON", () => {
     expect(issues.some((i) => i.severity === "dropped")).toBe(true);
   });
 
+  it("loads a caption block with more words than a spread could carry", () => {
+    // The end-of-block fallback used to be `Math.max(...words.map(…))`, which is
+    // evaluated eagerly and throws a RangeError once the argument limit is hit —
+    // failing the whole load for one oversized block. A full transcript in one
+    // block is a real shape, not a hostile one.
+    const wordCount = 150_000;
+    const words = Array.from({ length: wordCount }, (_value, index) => ({
+      text: `w${index}`,
+      startFrame: index,
+      endFrame: index + 1,
+      confidence: 1,
+    }));
+
+    const project = createProject();
+    const { project: repaired, issues } = validateProject({
+      ...project,
+      entities: {
+        ...project.entities,
+        captionTracks: {
+          big: {
+            id: "big",
+            sourceMediaId: null,
+            language: "en",
+            presetId: "core.captions.tiktok",
+            // No `endFrame`: the last word supplies it.
+            blocks: [{ id: "b1", words, startFrame: 0, styleOverrideId: null }],
+          },
+        },
+      },
+    });
+
+    const block = repaired.entities.captionTracks.big!.blocks[0]!;
+    expect(block.words).toHaveLength(wordCount);
+    expect(block.endFrame).toBe(wordCount);
+    expect(issues).toEqual([]);
+  });
+
   it("never throws and always returns a render-safe project for arbitrary junk", () => {
     const inputs: unknown[] = [
       null,

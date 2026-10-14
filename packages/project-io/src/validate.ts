@@ -614,10 +614,14 @@ function repairCaptionBlock(
 
   const firstWord = words[0]!;
   const startFrame = Math.max(0, asFiniteNumber(raw.startFrame, firstWord.startFrame));
-  const rawEnd = asFiniteNumber(
-    raw.endFrame,
-    Math.max(...words.map((word) => word.endFrame)),
-  );
+
+  // A loop, not `Math.max(...words.map(…))`: the fallback is evaluated eagerly,
+  // and a block with enough words blows the argument limit with a RangeError
+  // that fails the whole load. A transcript in one block is a real shape.
+  let lastWordEnd = firstWord.endFrame;
+  for (const word of words) lastWordEnd = Math.max(lastWordEnd, word.endFrame);
+
+  const rawEnd = asFiniteNumber(raw.endFrame, lastWordEnd);
 
   return {
     id: raw.id,
