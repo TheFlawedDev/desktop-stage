@@ -46,9 +46,10 @@ These are real limits, not a roadmap promise:
 
 ## Run locally
 
-Prerequisite: a current [Node.js LTS](https://nodejs.org/) release. It ships Corepack, which supplies
-this repository's pinned `pnpm`. If `pnpm` is not on your `PATH` after installing Node, run
-`corepack enable` once.
+Prerequisite: [Node.js](https://nodejs.org/) 22.13 or newer — the floor that this workspace's pinned
+`pnpm` 11 requires. If `pnpm` is not already on your `PATH`, install it once with
+`npm install -g pnpm@11`. Corepack is no longer bundled with every current Node.js release, so
+`corepack enable` is not always available.
 
 From the repository root:
 
