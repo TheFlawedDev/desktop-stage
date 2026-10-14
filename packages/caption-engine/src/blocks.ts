@@ -12,13 +12,27 @@
 
 import type { CaptionBlock, CaptionWord, Frame, Id } from "@cutaway/types";
 
-/** A block's span is derived from its words, so it can never disagree with them. */
+/**
+ * A block's span is derived from its words, so it can never disagree with them.
+ *
+ * Seeded and looped rather than `Math.min(...words.map(…))`: the spread is
+ * evaluated eagerly and throws `RangeError` once a block holds more words than
+ * the engine's argument limit (tens of thousands), and a whole transcript in one
+ * block is a shape the loader deliberately accepts.
+ */
 export function blockSpan(words: readonly CaptionWord[]): { startFrame: Frame; endFrame: Frame } {
   if (words.length === 0) return { startFrame: 0, endFrame: 0 };
-  return {
-    startFrame: Math.min(...words.map((w) => w.startFrame)),
-    endFrame: Math.max(...words.map((w) => w.endFrame)),
-  };
+
+  let startFrame = words[0]!.startFrame;
+  let endFrame = words[0]!.endFrame;
+
+  for (let i = 1; i < words.length; i += 1) {
+    const word = words[i]!;
+    if (word.startFrame < startFrame) startFrame = word.startFrame;
+    if (word.endFrame > endFrame) endFrame = word.endFrame;
+  }
+
+  return { startFrame, endFrame };
 }
 
 function makeBlock(id: Id, words: CaptionWord[]): CaptionBlock {

@@ -35,7 +35,28 @@ describe("blockSpan", () => {
   it("is empty for no words", () => {
     expect(blockSpan([])).toEqual({ startFrame: 0, endFrame: 0 });
   });
+
+  it("spans a block larger than a spread could carry", () => {
+    // `Math.min(...words.map(…))` throws `RangeError` past the engine's
+    // argument limit, and until recently that limit was reached long before a
+    // full transcript in one block was. The loader now accepts such a block, so
+    // every caption operation must survive it too.
+    const words = bigWordList(150_000);
+    expect(() => blockSpan(words)).not.toThrow();
+    expect(blockSpan(words)).toEqual({ startFrame: 0, endFrame: 150_000 });
+  });
 });
+
+/**
+ * `count` words of one frame each, starting at frame 0.
+ *
+ * Spread-based `Math.min`/`Math.max` throws at roughly this size, so these
+ * lists are the regression guard for every caption operation that derives a
+ * block's span from its words.
+ */
+function bigWordList(count: number): CaptionWord[] {
+  return Array.from({ length: count }, (_value, index) => word(`w${index}`, index, index + 1));
+}
 
 describe("buildBlocks", () => {
   const words = [
@@ -101,6 +122,17 @@ describe("splitBlock", () => {
     expect(splitBlock(source, -1, makeId)).toBeNull();
     expect(splitBlock(source, 2, makeId)).toBeNull();
   });
+
+  it("splits a block larger than a spread could carry", () => {
+    const result = splitBlock(block(bigWordList(150_000)), 99_999, makeId);
+    expect(result).not.toBeNull();
+    const [left, right] = result!;
+    expect(left.words).toHaveLength(100_000);
+    expect(right.words).toHaveLength(50_000);
+    expect(left.endFrame).toBe(100_000);
+    expect(right.startFrame).toBe(100_000);
+    expect(right.endFrame).toBe(150_000);
+  });
 });
 
 describe("mergeBlocks", () => {
@@ -115,6 +147,13 @@ describe("mergeBlocks", () => {
     const merged = mergeBlocks(block([word("a", 0, 10)]), block([word("b", 30, 50)]));
     expect(merged.startFrame).toBe(0);
     expect(merged.endFrame).toBe(50);
+  });
+
+  it("merges blocks larger than a spread could carry", () => {
+    const merged = mergeBlocks(block(bigWordList(150_000)), block(bigWordList(150_000)));
+    expect(merged.words).toHaveLength(300_000);
+    expect(merged.startFrame).toBe(0);
+    expect(merged.endFrame).toBe(150_000);
   });
 });
 
@@ -148,6 +187,13 @@ describe("shiftBlock", () => {
     const source = block([word("a", 10, 20)]);
     expect(shiftBlock(source, 0)).toBe(source);
   });
+
+  it("shifts a block larger than a spread could carry", () => {
+    const shifted = shiftBlock(block(bigWordList(150_000)), 5);
+    expect(shifted.startFrame).toBe(5);
+    expect(shifted.endFrame).toBe(150_005);
+    expect(shifted.words).toHaveLength(150_000);
+  });
 });
 
 describe("retimeBlock", () => {
@@ -175,6 +221,15 @@ describe("retimeBlock", () => {
 
   it("never lets the window start below zero", () => {
     expect(retimeBlock(block([word("a", 0, 10)]), -20, 10).startFrame).toBe(0);
+  });
+
+  it("re-times a block larger than a spread could carry", () => {
+    const retimed = retimeBlock(block(bigWordList(150_000)), 0, 300_000);
+    expect(retimed.startFrame).toBe(0);
+    expect(retimed.endFrame).toBe(300_000);
+    expect(retimed.words).toHaveLength(150_000);
+    // The clamp is one frame per word, well inside the requested window.
+    expect(retimed.words[149_999]!.endFrame).toBe(300_000);
   });
 });
 
