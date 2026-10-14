@@ -96,6 +96,39 @@ case holds too — a `.json` file is never fed to the ZIP reader.
 Adding a new project extension means adding it to `ARCHIVE_EXTENSIONS` or `JSON_EXTENSIONS` in
 `projectFiles.ts`, and covering it in `projectFiles.test.ts`.
 
+## Persistence and deferred media cleanup
+
+Project documents are autosaved to IndexedDB (`apps/web/src/state/projectStorage.ts`) and media bytes
+to a separate database (`packages/media-engine/src/storage.ts`). Three rules matter when changing
+either:
+
+- **A write is only done when its transaction commits.** Both stores settle their promises on
+  `tx.oncomplete` and reject on abort or error, because `request.onsuccess` only means the request was
+  processed — a readwrite transaction can still abort at commit on quota enforcement or an I/O error.
+  Never resolve one of these helpers on the request; a caller that is told "saved" acts on it
+  (the legacy-import decision is recorded, an archive import reports success).
+- **Removing media does not delete its bytes.** An asset removal is an undoable document edit
+  (`removeMediaAsset` → the undo history), and the document is only autosaved shortly afterwards.
+  Deleting the blobs at removal time would break undo and lose the media of a project that has not
+  been saved yet.
+- **Stored documents are migrated and validated on restore**, exactly like a file, through
+  `apps/web/src/features/project/restoreStoredProject.ts`. A record the validator cannot repair is
+  reported and left untouched; the session continues on the starter project, whose project id is
+  minted fresh per call (`createStarterProject`), so nothing it saves can land on the stored record.
+
+### Deferred media cleanup
+
+There is currently **no garbage collection of media bytes**. The startup sweep that used to run was
+removed because it was unsafe: it built its "referenced" set from stored documents only, so it could
+not see media another tab was staging for an in-flight archive import, or bytes an unsaved/undone edit
+still pointed at, and would delete live media. Orphaned blobs — from a removal, a deleted project, or
+an interrupted import — therefore accumulate until a safe sweep exists.
+
+A safe sweep needs a reference count or a lease (a staged blob marked in use before it is written, and
+a grace period before anything unreferenced is deleted); it must not be replaced by another
+"delete everything not in the stored documents" pass. The cost of not sweeping is disk space, which is
+the safer failure than deleting media a user can still get back.
+
 ## Web bundler on Windows
 
 `apps/web` runs Next.js with the webpack bundler (`next dev --webpack`, `next build --webpack`)

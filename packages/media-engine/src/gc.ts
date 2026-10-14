@@ -21,6 +21,13 @@ export interface GarbageCollectionResult {
  * `referencedKeys` must be the union across **all** stored projects, not just
  * the open one. Passing a single project's keys would delete the media of every
  * other project the user has.
+ *
+ * Not called by the app. A sweep whose reference set comes only from *stored*
+ * documents cannot see media another tab is staging for an in-flight archive
+ * import, or bytes an unsaved/undone edit still points at, so it can delete live
+ * media. Read `docs/DEVELOPMENT.md`, "Deferred media cleanup", before wiring it
+ * back in: a safe sweep needs a reference count or a lease, not another
+ * "everything not in the stored documents" pass.
  */
 export async function collectGarbage(
   store: MediaBlobStore,

@@ -25,7 +25,10 @@ export interface MediaImportApi {
   errors: ImportError[];
   dismissErrors: () => void;
   store: () => MediaBlobStore;
-  /** Removes an asset from the project *and* deletes its stored bytes. */
+  /**
+   * Removes an asset from the project. Its bytes stay in the store: the edit is
+   * undoable, so deleting them here would break undo.
+   */
   removeAsset: (assetId: string) => Promise<void>;
 }
 
@@ -71,25 +74,15 @@ export function useMediaImport(): MediaImportApi {
 
   const removeAsset = useCallback(
     async (assetId: string) => {
-      const asset = useEditorStore.getState().project.entities.media[assetId];
-
-      // Drop it from the document first so the UI responds immediately; the
-      // blob cleanup that follows is invisible to the user.
+      // Bytes are deliberately **not** deleted here. Removing an asset is an
+      // undoable document edit (`commit(..., "Remove media")`) and the document
+      // is only autosaved 800 ms later, so deleting the blobs now would leave an
+      // undo — or a crash inside that window — pointing at media that is gone.
+      // The orphaned bytes are handled by a future safe sweep; see
+      // docs/DEVELOPMENT.md, "Deferred media cleanup".
       removeMediaAsset(assetId);
-      if (!asset) return;
-
-      const keys = [
-        asset.source.type === "indexeddb" ? asset.source.key : null,
-        asset.thumbnailKey,
-        asset.waveformKey,
-      ].filter((key): key is string => Boolean(key));
-
-      // Without this the bytes outlive the asset forever — a 2GB video removed
-      // from the library would keep occupying the user's disk quota with
-      // nothing in the app referencing it.
-      await Promise.allSettled(keys.map((key) => getStore().delete(key)));
     },
-    [removeMediaAsset, getStore],
+    [removeMediaAsset],
   );
 
   return useMemo(
