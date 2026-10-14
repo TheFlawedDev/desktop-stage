@@ -119,19 +119,28 @@ either:
   Deleting the blobs at removal time would break undo and lose the media of a project that has not
   been saved yet.
 - **Stored documents are migrated and validated on restore**, through
-  `apps/web/src/features/project/restoreStoredProject.ts`. There is no startup
-  write until the restore has settled, so the starter document can never land on
-  the shelf first; a manual save (`Ctrl/Cmd+S`) waits for the restore rather than
-  writing the starter. A record that is not a project document, or has no usable
-  project id, is reported as a failed restore and left alone — the validator is
-  total and would otherwise accept it as an empty project, which the next
-  autosave would then store as a second record. A record that was **migrated,
-  repaired, or written by a newer build** is opened as a fresh-id copy: the
-  restored document is deliberately not byte-identical to what is stored, and the
-  record is the only copy, so writing the repaired version back over it would
-  destroy the original with no user action and no backup. The copy is saved
-  beside the original instead, and the load banner says so. Only a clean restore
-  keeps its id and updates its own record.
+  `apps/web/src/features/project/restoreStoredProject.ts`. A record that is not a
+  project document, or has no usable project id, is reported as a failed restore
+  and left alone — the validator is total and would otherwise accept it as an
+  empty project, which the next autosave would then store as a second record. A
+  record that was **migrated, repaired, or written by a newer build** is opened as
+  a fresh-id copy: the restored document is deliberately not byte-identical to
+  what is stored, and the record is the only copy, so writing the repaired version
+  back over it would destroy the original with no user action and no backup. The
+  copy is saved beside the original instead, and the load banner says so. Only a
+  clean restore keeps its id and updates its own record, and only a clean restore
+  displays the stored `savedAt`: a recovered copy reads as not saved until its
+  first write commits.
+- **No write happens until the restore has settled, and the untouched starter is
+  never written after a restore that failed.** `projectWriteGate.ts` holds the
+  rule: the debounced autosave, the `beforeunload` flush, and a manual save
+  (`Ctrl/Cmd+S`) all refuse while the restore is pending, and all refuse the
+  starter after a failure, whose fresh id with `savedAt = now` would outrank the
+  record that failed to open and hide it for good. The first edit, import, or
+  "New project" replaces the document, and that authored document is then written
+  normally. The restore effect is replay-safe: a cancelled attempt (React
+  development StrictMode) settles nothing, so the live replay's outcome is the
+  one the gate keeps.
 
 ### Deferred media cleanup
 
