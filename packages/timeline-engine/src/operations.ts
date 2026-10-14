@@ -105,6 +105,12 @@ export function moveClip(clip: Clip, newStartFrame: Frame, newTrackId?: Id): Cli
  * Deletes a clip and pulls every later clip on the same track back by the
  * deleted clip's duration, closing the gap.
  *
+ * Only clips that begin *at or after* the deleted clip's end move. A clip that
+ * merely overlaps the deleted range keeps its authored start: pulling it back by
+ * the whole duration could land it before frame 0, and a clip whose entire span
+ * sits before zero is never drawn — it would silently disappear from the
+ * timeline instead of closing a gap.
+ *
  * `trackClips` must contain only clips from one track. Order is irrelevant —
  * the result is sorted by start frame, which callers can rely on.
  */
@@ -113,9 +119,19 @@ export function rippleDelete(trackClips: readonly Clip[], clipId: Id): Clip[] {
   if (!target) return [...trackClips];
 
   const gap = target.durationFrames;
+  // A clip starting at or after this frame can move back by `gap` and still
+  // land inside the deleted clip's own (non-negative) start.
+  const firstShiftable = target.startFrame + gap;
+
   return trackClips
     .filter((c) => c.id !== clipId)
-    .map((c) => (c.startFrame >= target.startFrame ? { ...c, startFrame: c.startFrame - gap } : c))
+    .map((c) =>
+      c.startFrame < firstShiftable
+        ? { ...c }
+        : // Clamped rather than assumed: a start frame is document data and a
+          // negative one would break every consumer that trusts `startFrame >= 0`.
+          { ...c, startFrame: Math.max(0, c.startFrame - gap) },
+    )
     .sort((a, b) => a.startFrame - b.startFrame);
 }
 

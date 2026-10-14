@@ -148,6 +148,57 @@ describe("rippleDelete", () => {
     const clips = [makeClip({ id: "a" })];
     expect(rippleDelete(clips, "missing")).toEqual(clips);
   });
+
+  it("keeps a survivor visible when the deleted window starts at zero", () => {
+    // Deleting the long early clip used to drag the overlapping clip back by the
+    // full 100 frames, to frame -80 — entirely before the timeline, so a clip
+    // that had been on screen silently vanished.
+    const clips = [
+      makeClip({ id: "early", startFrame: 0, durationFrames: 100 }),
+      makeClip({ id: "overlap", startFrame: 20, durationFrames: 30 }),
+    ];
+
+    const result = rippleDelete(clips, "early");
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.startFrame).toBe(20);
+    expect(result[0]!.startFrame + result[0]!.durationFrames).toBeGreaterThan(0);
+  });
+
+  it("never produces a negative start frame", () => {
+    // A dense overlap: the deleted clip starts at 0 and is longer than the
+    // start of every other clip on the track.
+    const clips = [
+      makeClip({ id: "target", startFrame: 0, durationFrames: 200 }),
+      makeClip({ id: "a", startFrame: 10, durationFrames: 20 }),
+      makeClip({ id: "b", startFrame: 50, durationFrames: 20 }),
+      makeClip({ id: "c", startFrame: 260, durationFrames: 30 }),
+    ];
+
+    const result = rippleDelete(clips, "target");
+
+    expect(result.every((clip) => clip.startFrame >= 0)).toBe(true);
+    // The clip genuinely after the deleted window still closes the gap...
+    expect(result.find((clip) => clip.id === "c")!.startFrame).toBe(60);
+    // ...and the overlapping ones stay where the user authored them.
+    expect(result.find((clip) => clip.id === "a")!.startFrame).toBe(10);
+    expect(result.find((clip) => clip.id === "b")!.startFrame).toBe(50);
+  });
+
+  it("only pulls back clips that begin at or after the deleted window's end", () => {
+    const clips = [
+      makeClip({ id: "straddler", startFrame: 45, durationFrames: 20 }),
+      makeClip({ id: "target", startFrame: 40, durationFrames: 30 }),
+      makeClip({ id: "later", startFrame: 70, durationFrames: 10 }),
+    ];
+
+    const result = rippleDelete(clips, "target");
+
+    expect(result.map((clip) => [clip.id, clip.startFrame])).toEqual([
+      ["later", 40],
+      ["straddler", 45],
+    ]);
+  });
 });
 
 describe("rippleInsert", () => {
