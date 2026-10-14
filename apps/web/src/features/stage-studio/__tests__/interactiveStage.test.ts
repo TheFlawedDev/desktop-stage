@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { STAGE_WIDTH, STAGE_HEIGHT } from "../InteractiveStage";
-import { StageWindowManager } from "@desktop-stage/desktop-engine";
+import { StageWindowManager, MouseFollowCamera } from "@desktop-stage/desktop-engine";
 import { createProject, createClip, createId } from "@cutaway/utils";
-import type { StageTakeManifest, Rect } from "@cutaway/types";
+import type { StageTakeManifest, Rect, StagePointerEvent } from "@cutaway/types";
 
 describe("InteractiveStage", () => {
   it("defines standard 1280x720 canvas dimensions", () => {
@@ -90,5 +90,43 @@ describe("InteractiveStage", () => {
     expect(manifest.recordingRect).toEqual(cropRect);
     expect(manifest.pointerEvents).toHaveLength(2);
     expect(manifest.trackMouseEnabled).toBe(false);
+  });
+
+  it("computes 1.5x smoothed follow viewport and responsive transform offset", () => {
+    const camera = new MouseFollowCamera();
+    const baseRect: Rect = { x: 0, y: 0, width: 1280, height: 720 };
+    const pointerEvents: StagePointerEvent[] = [
+      { timestampMs: 0, pos: { x: 640, y: 360 }, type: "move" },
+      { timestampMs: 500, pos: { x: 900, y: 200 }, type: "move" },
+      { timestampMs: 1000, pos: { x: 900, y: 200 }, type: "click" },
+    ];
+
+    // At t=0, camera centers at 640, 360
+    const startView = camera.computeSmoothedView(pointerEvents, 0, baseRect, 1.5);
+    expect(startView.zoom).toBe(1.5);
+    expect(startView.viewport.width).toBeCloseTo(1280 / 1.5, 1);
+    expect(startView.viewport.height).toBeCloseTo(720 / 1.5, 1);
+
+    const vpCenterX = startView.viewport.x + startView.viewport.width / 2;
+    const vpCenterY = startView.viewport.y + startView.viewport.height / 2;
+    expect(vpCenterX).toBeCloseTo(640, 0);
+    expect(vpCenterY).toBeCloseTo(360, 0);
+
+    // Compute transform translation percentage
+    const dxPercent = ((baseRect.width / 2 - vpCenterX) / baseRect.width) * 100;
+    const dyPercent = ((baseRect.height / 2 - vpCenterY) / baseRect.height) * 100;
+    expect(dxPercent).toBeCloseTo(0, 1);
+    expect(dyPercent).toBeCloseTo(0, 1);
+
+    // At t=1000, camera moves towards 900, 200 with smoothing
+    const laterView = camera.computeSmoothedView(pointerEvents, 1000, baseRect, 1.5);
+    const laterCenterX = laterView.viewport.x + laterView.viewport.width / 2;
+    const laterCenterY = laterView.viewport.y + laterView.viewport.height / 2;
+    expect(laterCenterX).toBeGreaterThan(640);
+    expect(laterCenterY).toBeLessThan(360);
+
+    // Later dxPercent translates left to keep target centered
+    const laterDx = ((baseRect.width / 2 - laterCenterX) / baseRect.width) * 100;
+    expect(laterDx).toBeLessThan(0);
   });
 });

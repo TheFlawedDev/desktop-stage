@@ -114,6 +114,18 @@ export const InteractiveStage = forwardRef<InteractiveStageHandle, InteractiveSt
     const recordedChunksRef = useRef<Blob[]>([]);
     const recordRafRef = useRef<number | null>(null);
 
+    // Live state tracking for canvas recorder
+    const lastPointerPosRef = useRef<{ x: number; y: number }>({ x: 640, y: 360 });
+    const pointerDownRef = useRef(false);
+    const terminalHistoryRef = useRef(terminalHistory);
+    terminalHistoryRef.current = terminalHistory;
+    const terminalInputRef = useRef(terminalInput);
+    terminalInputRef.current = terminalInput;
+    const finderFilesRef = useRef(finderFiles);
+    finderFilesRef.current = finderFiles;
+    const arcActiveUrlRef = useRef(arcActiveUrl);
+    arcActiveUrlRef.current = arcActiveUrl;
+
     // Responsive scaling
     const scale = Math.max(0.1, Math.min(width / STAGE_WIDTH, height / STAGE_HEIGHT));
 
@@ -207,6 +219,7 @@ export const InteractiveStage = forwardRef<InteractiveStageHandle, InteractiveSt
 
     const handleStageMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
       const coords = getStageCoords(e);
+      lastPointerPosRef.current = coords;
 
       // Handle window dragging
       if (draggingId) {
@@ -238,7 +251,14 @@ export const InteractiveStage = forwardRef<InteractiveStageHandle, InteractiveSt
       }
     };
 
+    const handleStageMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+      pointerDownRef.current = true;
+      const coords = getStageCoords(e);
+      lastPointerPosRef.current = coords;
+    };
+
     const handleStageMouseUp = () => {
+      pointerDownRef.current = false;
       setDraggingId(null);
       setResizingId(null);
     };
@@ -319,36 +339,394 @@ export const InteractiveStage = forwardRef<InteractiveStageHandle, InteractiveSt
       let running = true;
       const drawFrame = () => {
         if (!running) return;
-        ctx.fillStyle = "#1e1b4b";
+
+        // 1. Desktop Wallpaper Background
+        const bgGrad = ctx.createLinearGradient(0, 0, recRect.width, recRect.height);
+        bgGrad.addColorStop(0, "#0b0f19");
+        bgGrad.addColorStop(0.35, "#1e1b4b");
+        bgGrad.addColorStop(0.7, "#311042");
+        bgGrad.addColorStop(1, "#18181b");
+        ctx.fillStyle = bgGrad;
         ctx.fillRect(0, 0, recRect.width, recRect.height);
 
-        // Draw basic stage representation on the recording canvas
-        ctx.fillStyle = "#312e81";
-        ctx.fillRect(0, 0, recRect.width, 28); // Menu bar
-        ctx.fillStyle = "#e0e7ff";
-        ctx.font = "12px sans-serif";
-        ctx.fillText("Desktop Stage Live Recording", 16, 18);
+        // Subtle ambient desktop nebula glow
+        const orbGrad = ctx.createRadialGradient(
+          recRect.width * 0.7 - recRect.x,
+          recRect.height * 0.3 - recRect.y,
+          20,
+          recRect.width * 0.7 - recRect.x,
+          recRect.height * 0.3 - recRect.y,
+          Math.max(200, recRect.width * 0.5)
+        );
+        orbGrad.addColorStop(0, "rgba(99, 102, 241, 0.25)");
+        orbGrad.addColorStop(1, "rgba(0, 0, 0, 0)");
+        ctx.fillStyle = orbGrad;
+        ctx.fillRect(0, 0, recRect.width, recRect.height);
 
-        // Draw windows
-        for (const win of wm.getWindows()) {
+        // 2. macOS Top Menu Bar (if visible in crop region)
+        const menuBarH = 28;
+        const mbY = -recRect.y;
+        if (mbY + menuBarH > 0 && mbY < recRect.height) {
+          ctx.fillStyle = "rgba(18, 18, 24, 0.88)";
+          ctx.fillRect(0, Math.max(0, mbY), recRect.width, menuBarH);
+          ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+          ctx.fillRect(0, mbY + menuBarH - 1, recRect.width, 1);
+
+          // Apple logo
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "bold 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+          ctx.fillText("", 16 - recRect.x, mbY + 18);
+
+          const focusedWin = wm.getFocusedWindow();
+          const appName = focusedWin
+            ? focusedWin.appKind === "iterm"
+              ? "Terminal"
+              : focusedWin.appKind === "finder"
+              ? "Finder"
+              : focusedWin.appKind === "arc"
+              ? "Arc"
+              : focusedWin.title
+            : "Finder";
+          ctx.font = "bold 12px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+          ctx.fillText(appName, 36 - recRect.x, mbY + 18);
+
+          ctx.font = "12px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+          ctx.fillStyle = "#d4d4d8";
+          let mx = 105 - recRect.x;
+          for (const item of ["File", "Edit", "View", "Window", "Help"]) {
+            ctx.fillText(item, mx, mbY + 18);
+            mx += ctx.measureText(item).width + 16;
+          }
+
+          // Status & Clock
+          const timeStr = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+          ctx.fillStyle = "#e4e4e7";
+          ctx.font = "12px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+          ctx.fillText(`Tue Oct 14  ${timeStr}`, recRect.width - 125, mbY + 18);
+        }
+
+        // 3. Open Windows (sorted by z-index back-to-front)
+        const sortedWindows = [...wm.getWindows()].sort((a, b) => a.zIndex - b.zIndex);
+        for (const win of sortedWindows) {
           if (win.isMinimized) continue;
           const rx = win.rect.x - recRect.x;
           const ry = win.rect.y - recRect.y;
+          const rw = win.rect.width;
+          const rh = win.rect.height;
 
-          ctx.fillStyle = win.isFocused ? "#18181b" : "#27272a";
-          ctx.strokeStyle = win.isFocused ? "#6366f1" : "#52525b";
+          // Skip completely off-screen windows in selected-area mode
+          if (rx + rw <= 0 || ry + rh <= 0 || rx >= recRect.width || ry >= recRect.height) continue;
+
+          // Window drop shadow
+          ctx.save();
+          ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
+          ctx.shadowBlur = win.isFocused ? 26 : 14;
+          ctx.shadowOffsetY = 10;
+          ctx.fillStyle = win.appKind === "iterm" ? "#09090b" : "#18181b";
+          ctx.beginPath();
+          ctx.roundRect(rx, ry, rw, rh, 10);
+          ctx.fill();
+          ctx.restore();
+
+          // Window border
+          ctx.strokeStyle = win.isFocused ? "rgba(99, 102, 241, 0.45)" : "rgba(255, 255, 255, 0.1)";
           ctx.lineWidth = 1;
           ctx.beginPath();
-          ctx.roundRect(rx, ry, win.rect.width, win.rect.height, 8);
+          ctx.roundRect(rx, ry, rw, rh, 10);
+          ctx.stroke();
+
+          // Clip content inside rounded window rect
+          ctx.save();
+          ctx.beginPath();
+          ctx.roundRect(rx, ry, rw, rh, 10);
+          ctx.clip();
+
+          // Title bar
+          const tbH = 28;
+          ctx.fillStyle = win.isFocused ? "#1f1f23" : "#141416";
+          ctx.fillRect(rx, ry, rw, tbH);
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+          ctx.beginPath();
+          ctx.moveTo(rx, ry + tbH);
+          ctx.lineTo(rx + rw, ry + tbH);
+          ctx.stroke();
+
+          // Traffic lights
+          ctx.fillStyle = "#ff5f56";
+          ctx.beginPath(); ctx.arc(rx + 16, ry + 14, 5, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = "#ffbd2e";
+          ctx.beginPath(); ctx.arc(rx + 32, ry + 14, 5, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = "#27c93f";
+          ctx.beginPath(); ctx.arc(rx + 48, ry + 14, 5, 0, Math.PI * 2); ctx.fill();
+
+          // Title text
+          ctx.fillStyle = win.isFocused ? "#f4f4f5" : "#a1a1aa";
+          ctx.font = "bold 11px -apple-system, BlinkMacSystemFont, sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText(win.title, rx + rw / 2, ry + 18);
+          ctx.textAlign = "left";
+
+          // Content Area
+          const cy = ry + tbH;
+          const ch = rh - tbH;
+
+          if (win.appKind === "iterm") {
+            ctx.fillStyle = "#09090b";
+            ctx.fillRect(rx, cy, rw, ch);
+
+            ctx.font = "11px 'JetBrains Mono', 'Fira Code', 'Courier New', monospace";
+            let ty = cy + 18;
+            const history = terminalHistoryRef.current;
+            const recent = history.slice(-10);
+            for (const item of recent) {
+              if (ty > ry + rh - 24) break;
+              ctx.fillStyle = "#a1a1aa";
+              ctx.fillText(`studio@desktop ~ % ${item.cmd}`, rx + 14, ty);
+              ty += 16;
+              if (item.out) {
+                ctx.fillStyle = "#34d399";
+                const lines = item.out.split("\n").filter(Boolean);
+                for (const l of lines.slice(0, 3)) {
+                  if (ty > ry + rh - 24) break;
+                  ctx.fillText(l, rx + 14, ty);
+                  ty += 15;
+                }
+              }
+              if (item.err) {
+                ctx.fillStyle = "#f87171";
+                ctx.fillText(item.err, rx + 14, ty);
+                ty += 15;
+              }
+            }
+            if (ty <= ry + rh - 18) {
+              ctx.fillStyle = "#34d399";
+              ctx.fillText(`studio@desktop ~ % `, rx + 14, ty);
+              const promptW = ctx.measureText(`studio@desktop ~ % `).width;
+              ctx.fillStyle = "#fafafa";
+              ctx.fillText(terminalInputRef.current, rx + 14 + promptW, ty);
+              const inputW = ctx.measureText(terminalInputRef.current).width;
+              // Blinking cursor indicator
+              ctx.fillStyle = "#34d399";
+              ctx.fillRect(rx + 14 + promptW + inputW + 2, ty - 11, 7, 13);
+            }
+          } else if (win.appKind === "finder") {
+            const sbW = Math.min(120, rw * 0.28);
+            ctx.fillStyle = "#121214";
+            ctx.fillRect(rx, cy, sbW, ch);
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.06)";
+            ctx.beginPath();
+            ctx.moveTo(rx + sbW, cy);
+            ctx.lineTo(rx + sbW, ry + rh);
+            ctx.stroke();
+
+            ctx.font = "bold 9px sans-serif";
+            ctx.fillStyle = "#71717a";
+            ctx.fillText("FAVORITES", rx + 12, cy + 18);
+            ctx.font = "11px sans-serif";
+            ctx.fillStyle = "#d4d4d8";
+            let sby = cy + 38;
+            for (const item of ["Desktop", "Documents", "Downloads", "Pictures"]) {
+              ctx.fillText(item, rx + 12, sby);
+              sby += 22;
+            }
+
+            const fx = rx + sbW + 16;
+            let fy = cy + 20;
+            const files = finderFilesRef.current;
+            for (let i = 0; i < files.length; i++) {
+              const file = files[i]!;
+              const col = i % 3;
+              const row = Math.floor(i / 3);
+              const itemX = fx + col * 90;
+              const itemY = fy + row * 70;
+              if (itemY + 50 > ry + rh) break;
+
+              if (file.isDir) {
+                ctx.fillStyle = "#3b82f6";
+                ctx.beginPath();
+                ctx.roundRect(itemX + 16, itemY, 28, 22, 4);
+                ctx.fill();
+              } else {
+                ctx.fillStyle = "#64748b";
+                ctx.beginPath();
+                ctx.roundRect(itemX + 18, itemY, 24, 28, 3);
+                ctx.fill();
+                ctx.fillStyle = "#ffffff";
+                ctx.font = "7px sans-serif";
+                ctx.fillText("TXT", itemX + 22, itemY + 16);
+              }
+
+              ctx.fillStyle = "#e4e4e7";
+              ctx.font = "10px sans-serif";
+              ctx.textAlign = "center";
+              ctx.fillText(file.name.slice(0, 10), itemX + 30, itemY + 40);
+              ctx.textAlign = "left";
+            }
+          } else if (win.appKind === "arc") {
+            ctx.fillStyle = "#18181b";
+            ctx.fillRect(rx, cy, rw, ch);
+            ctx.fillStyle = "#27272a";
+            ctx.beginPath();
+            ctx.roundRect(rx + 12, cy + 8, rw - 24, 26, 6);
+            ctx.fill();
+            ctx.fillStyle = "#a1a1aa";
+            ctx.font = "11px sans-serif";
+            ctx.fillText("🔒 " + (arcActiveUrlRef.current || "https://example.com"), rx + 24, cy + 25);
+
+            ctx.fillStyle = "#0f172a";
+            ctx.fillRect(rx + 12, cy + 42, rw - 24, ch - 54);
+            ctx.fillStyle = "#818cf8";
+            ctx.font = "bold 14px sans-serif";
+            ctx.fillText("Arc Sandboxed Browser", rx + 28, cy + 72);
+            ctx.fillStyle = "#94a3b8";
+            ctx.font = "11px sans-serif";
+            ctx.fillText("Chromium context isolation • Audio muted during recording", rx + 28, cy + 94);
+          } else if (win.appKind === "quicktime") {
+            ctx.fillStyle = "#0c0a09";
+            ctx.fillRect(rx, cy, rw, ch);
+            ctx.fillStyle = "#38bdf8";
+            ctx.beginPath();
+            ctx.arc(rx + rw / 2, cy + ch / 2 - 10, 24, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = "#0f172a";
+            ctx.beginPath();
+            ctx.moveTo(rx + rw / 2 - 6, cy + ch / 2 - 18);
+            ctx.lineTo(rx + rw / 2 + 10, cy + ch / 2 - 10);
+            ctx.lineTo(rx + rw / 2 - 6, cy + ch / 2 - 2);
+            ctx.fill();
+            ctx.fillStyle = "#a1a1aa";
+            ctx.font = "11px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText("QuickTime Player • 00:01:23 / 00:04:30", rx + rw / 2, cy + ch / 2 + 30);
+            ctx.textAlign = "left";
+          } else if (win.appKind === "photobooth") {
+            ctx.fillStyle = "#1c1917";
+            ctx.fillRect(rx, cy, rw, ch);
+            ctx.fillStyle = "#f43f5e";
+            ctx.beginPath();
+            ctx.arc(rx + rw / 2, cy + ch / 2 - 10, 24, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = "#a1a1aa";
+            ctx.font = "11px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText("Photo Booth • Live Preview", rx + rw / 2, cy + ch / 2 + 30);
+            ctx.textAlign = "left";
+          }
+
+          ctx.restore(); // end clip
+        }
+
+        // 4. macOS Dock (if visible in recRect)
+        const dockW = 260;
+        const dockH = 50;
+        const dockX = (STAGE_WIDTH - dockW) / 2 - recRect.x;
+        const dockY = STAGE_HEIGHT - dockH - 12 - recRect.y;
+
+        if (dockY < recRect.height && dockX + dockW > 0 && dockX < recRect.width) {
+          ctx.save();
+          ctx.shadowColor = "rgba(0, 0, 0, 0.4)";
+          ctx.shadowBlur = 20;
+          ctx.shadowOffsetY = 6;
+          ctx.fillStyle = "rgba(255, 255, 255, 0.15)";
+          ctx.beginPath();
+          ctx.roundRect(dockX, dockY, dockW, dockH, 16);
+          ctx.fill();
+          ctx.restore();
+
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.roundRect(dockX, dockY, dockW, dockH, 16);
+          ctx.stroke();
+
+          const dockApps = [
+            { kind: "finder", color: "#3b82f6", label: "Finder" },
+            { kind: "iterm", color: "#18181b", label: "iTerm" },
+            { kind: "arc", color: "#a855f7", label: "Arc" },
+            { kind: "quicktime", color: "#06b6d4", label: "QuickTime" },
+            { kind: "photobooth", color: "#f43f5e", label: "Photo Booth" },
+          ];
+
+          const iconSize = 34;
+          const gap = 12;
+          const startX = dockX + (dockW - (dockApps.length * iconSize + (dockApps.length - 1) * gap)) / 2;
+          const iconY = dockY + (dockH - iconSize) / 2;
+
+          for (let i = 0; i < dockApps.length; i++) {
+            const da = dockApps[i]!;
+            const ix = startX + i * (iconSize + gap);
+            ctx.fillStyle = da.color;
+            ctx.beginPath();
+            ctx.roundRect(ix, iconY, iconSize, iconSize, 8);
+            ctx.fill();
+
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 12px sans-serif";
+            ctx.textAlign = "center";
+            if (da.kind === "iterm") {
+              ctx.fillStyle = "#34d399";
+              ctx.fillText(">_", ix + iconSize / 2, iconY + 22);
+            } else if (da.kind === "finder") {
+              ctx.fillText("☺", ix + iconSize / 2, iconY + 22);
+            } else if (da.kind === "arc") {
+              ctx.fillText("◎", ix + iconSize / 2, iconY + 22);
+            } else if (da.kind === "quicktime") {
+              ctx.fillText("▶", ix + iconSize / 2, iconY + 22);
+            } else if (da.kind === "photobooth") {
+              ctx.fillText("📷", ix + iconSize / 2, iconY + 22);
+            }
+            ctx.textAlign = "left";
+
+            const isRunning = wm.getWindows().some((w) => w.appKind === da.kind);
+            if (isRunning) {
+              ctx.fillStyle = "#ffffff";
+              ctx.beginPath();
+              ctx.arc(ix + iconSize / 2, dockY + dockH - 4, 2, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+        }
+
+        // 5. Mouse Pointer Cursor
+        const pointer = lastPointerPosRef.current;
+        const cx = pointer.x - recRect.x;
+        const cy = pointer.y - recRect.y;
+
+        if (cx >= -20 && cx <= recRect.width + 20 && cy >= -20 && cy <= recRect.height + 20) {
+          ctx.save();
+
+          // Click ripple
+          if (pointerDownRef.current) {
+            ctx.fillStyle = "rgba(99, 102, 241, 0.4)";
+            ctx.beginPath();
+            ctx.arc(cx, cy, 14, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // Cursor arrow
+          ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
+          ctx.shadowBlur = 6;
+          ctx.shadowOffsetX = 1;
+          ctx.shadowOffsetY = 2;
+
+          ctx.fillStyle = "#ffffff";
+          ctx.strokeStyle = "#000000";
+          ctx.lineWidth = 1.5;
+          ctx.lineJoin = "round";
+
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(cx, cy + 18);
+          ctx.lineTo(cx + 4.8, cy + 13.8);
+          ctx.lineTo(cx + 8.2, cy + 20.8);
+          ctx.lineTo(cx + 10.6, cy + 19.6);
+          ctx.lineTo(cx + 7.2, cy + 12.8);
+          ctx.lineTo(cx + 13, cy + 12.8);
+          ctx.closePath();
           ctx.fill();
           ctx.stroke();
 
-          // Title bar
-          ctx.fillStyle = "#3f3f46";
-          ctx.fillRect(rx, ry, win.rect.width, 28);
-          ctx.fillStyle = "#fafafa";
-          ctx.font = "11px sans-serif";
-          ctx.fillText(win.title, rx + 16, ry + 18);
+          ctx.restore();
         }
 
         recordRafRef.current = requestAnimationFrame(drawFrame);
@@ -483,6 +861,7 @@ export const InteractiveStage = forwardRef<InteractiveStageHandle, InteractiveSt
             background: "linear-gradient(135deg, #1e1b4b 0%, #312e81 40%, #1e3a8a 100%)",
           }}
           onMouseMove={handleStageMouseMove}
+          onMouseDown={handleStageMouseDown}
           onMouseUp={handleStageMouseUp}
           onClick={handleStageClick}
         >

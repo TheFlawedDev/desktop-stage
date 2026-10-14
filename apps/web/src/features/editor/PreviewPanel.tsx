@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useMemo } from "react";
 import {
   ChevronsLeft,
   ChevronsRight,
@@ -12,11 +12,13 @@ import {
   Circle,
   Square,
   Layers,
+  Sparkles,
 } from "lucide-react";
 import { IconButton } from "@cutaway/ui";
 import { formatTimecode } from "@cutaway/timeline-engine";
 import { importFile } from "@cutaway/media-engine";
 import type { StageTakeManifest, Rect } from "@cutaway/types";
+import { MouseFollowCamera } from "@desktop-stage/desktop-engine";
 import { useEditorStore } from "@/state/editorStore";
 import { useMediaImportContext } from "@/features/media/MediaImportProvider";
 import { PreviewStage } from "@/features/preview/PreviewStage";
@@ -52,6 +54,7 @@ export function PreviewPanel() {
   const setPlayhead = useEditorStore((state) => state.setPlayhead);
   const addMediaAssets = useEditorStore((state) => state.addMediaAssets);
   const addClipFromAsset = useEditorStore((state) => state.addClipFromAsset);
+  const setTrackFlag = useEditorStore((state) => state.setTrackFlag);
   const { store } = useMediaImportContext();
 
   // Recording UI state
@@ -60,6 +63,12 @@ export function PreviewPanel() {
   const [recordDuration, setRecordDuration] = useState(0);
   const [selectedCrop, setSelectedCrop] = useState<Rect>({ x: 140, y: 90, width: 800, height: 500 });
   const [takeNotice, setTakeNotice] = useState<string | null>(null);
+
+  // Take review and 1.5x mouse follow camera
+  const [lastTake, setLastTake] = useState<StageTakeManifest | null>(null);
+  const [trackMouseEnabled, setTrackMouseEnabled] = useState(false);
+  const [previewScrubMs, setPreviewScrubMs] = useState(0);
+  const camera = useMemo(() => new MouseFollowCamera(), []);
 
   const containerSize = useElementSize(containerRef);
 
@@ -104,8 +113,18 @@ export function PreviewPanel() {
       addMediaAssets([asset]);
       addClipFromAsset(asset.id);
 
-      setTakeNotice(`Take recorded (${(manifest.durationMs / 1000).toFixed(1)}s) & added to timeline!`);
-      setTimeout(() => setTakeNotice(null), 4000);
+      // Hide starter desktop wireframe track if present so the recorded take video is fully visible
+      const tracks = useEditorStore.getState().project.entities.tracks;
+      if (tracks["track-desktop"]) {
+        setTrackFlag("track-desktop", "hidden", true);
+      }
+
+      setLastTake(manifest);
+      setTrackMouseEnabled(true);
+      setPreviewScrubMs(0);
+
+      setTakeNotice(`Take recorded (${(manifest.durationMs / 1000).toFixed(1)}s) & 1.5× mouse follow enabled!`);
+      setTimeout(() => setTakeNotice(null), 5000);
 
       // Auto-switch to preview mode with playhead at start of new clip
       setWorkspaceMode("preview");
@@ -114,6 +133,25 @@ export function PreviewPanel() {
       console.error("Failed to add recorded take to timeline:", err);
     }
   };
+
+  // Compute camera follow view if trackMouse is enabled
+  const cameraView = useMemo(() => {
+    if (!lastTake || !trackMouseEnabled) return null;
+    const currentMs =
+      workspaceMode === "interactive"
+        ? previewScrubMs
+        : Math.min(lastTake.durationMs, Math.max(0, (playhead / fps) * 1000));
+    try {
+      return camera.computeSmoothedView(
+        lastTake.pointerEvents,
+        currentMs,
+        lastTake.recordingRect,
+        1.5
+      );
+    } catch {
+      return null;
+    }
+  }, [camera, lastTake, trackMouseEnabled, workspaceMode, previewScrubMs, playhead, fps]);
 
   return (
     <div className="bg-surface-base flex h-full flex-col">
@@ -128,34 +166,113 @@ export function PreviewPanel() {
               backgroundColor: background,
             }}
           >
-            {stageSize.width > 0 && (
-              workspaceMode === "interactive" ? (
-                <InteractiveStage
-                  ref={stageRef}
+            {/* 1.5x Mouse-Follow Camera Zoom Wrapper */}
+            <div
+              className="relative h-full w-full"
+              style={
+                trackMouseEnabled && cameraView
+                  ? (() => {
+                      const baseW = lastTake?.recordingRect.width || 1280;
+                      const baseH = lastTake?.recordingRect.height || 720;
+                      const vpCenterX = cameraView.viewport.x + cameraView.viewport.width / 2;
+                      const vpCenterY = cameraView.viewport.y + cameraView.viewport.height / 2;
+                      const dxPercent = ((baseW / 2 - vpCenterX) / baseW) * 100;
+                      const dyPercent = ((baseH / 2 - vpCenterY) / baseH) * 100;
+
+                      return {
+                        transform: `scale(${cameraView.zoom}) translate(${dxPercent}%, ${dyPercent}%)`,
+                        transformOrigin: "center center",
+                        transition: isPlaying ? "none" : "transform 0.08s ease-out",
+                      };
+                    })()
+                  : undefined
+              }
+            >
+              {stageSize.width > 0 && (
+                workspaceMode === "interactive" ? (
+                  <InteractiveStage
+                    ref={stageRef}
+                    width={stageSize.width}
+                    height={stageSize.height}
+                    onTakeRecorded={handleTakeRecorded}
+                    onRecordingStatusChange={handleRecordingStatusChange}
+                    selectedCrop={selectedCrop}
+                    onCropChange={setSelectedCrop}
+                  />
+                ) : (
+                  <PreviewStage width={stageSize.width} height={stageSize.height} />
+                )
+              )}
+
+              {workspaceMode === "preview" && showGuides && <SafeGuides />}
+              {workspaceMode === "preview" && isEmpty && <StartHint />}
+              {workspaceMode === "preview" && stageSize.width > 0 && (
+                <MaskOverlay
                   width={stageSize.width}
                   height={stageSize.height}
-                  onTakeRecorded={handleTakeRecorded}
-                  onRecordingStatusChange={handleRecordingStatusChange}
-                  selectedCrop={selectedCrop}
-                  onCropChange={setSelectedCrop}
+                  resolution={resolution}
                 />
-              ) : (
-                <PreviewStage width={stageSize.width} height={stageSize.height} />
-              )
-            )}
+              )}
+            </div>
 
-            {workspaceMode === "preview" && showGuides && <SafeGuides />}
-            {workspaceMode === "preview" && isEmpty && <StartHint />}
-            {workspaceMode === "preview" && stageSize.width > 0 && (
-              <MaskOverlay
-                width={stageSize.width}
-                height={stageSize.height}
-                resolution={resolution}
-              />
+            {/* 1.5x Camera Active Indicator Overlay */}
+            {trackMouseEnabled && cameraView && (
+              <div className="pointer-events-none absolute top-3 left-3 z-40 flex items-center gap-1.5 rounded-full bg-emerald-500/90 px-3 py-1 text-2xs font-semibold text-black shadow-lg backdrop-blur-xs animate-fade-in">
+                <Sparkles size={12} className="fill-current" />
+                <span>1.5× MOUSE FOLLOW ACTIVE</span>
+              </div>
             )}
           </div>
         </div>
       </div>
+
+      {/* Take Review & Mouse-Follow Bar (Visible when a take is available) */}
+      {lastTake && (
+        <div className="border-border-subtle bg-surface-panel/95 flex h-9 shrink-0 items-center justify-between border-t px-3 text-xs backdrop-blur-xs">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-emerald-400" />
+              <span className="font-semibold text-zinc-200">Take Review:</span>
+              <span className="font-mono text-zinc-400 text-2xs">
+                {(lastTake.durationMs / 1000).toFixed(1)}s · {lastTake.pointerEvents.length} events
+              </span>
+            </div>
+
+            <button
+              onClick={() => setTrackMouseEnabled((prev) => !prev)}
+              className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-2xs font-medium transition-all ${
+                trackMouseEnabled
+                  ? "bg-emerald-600 text-white shadow-xs font-semibold"
+                  : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+              }`}
+              title="Toggle 1.5× smoothed camera tracking of the recorded mouse pointer"
+            >
+              <Sparkles size={12} className={trackMouseEnabled ? "fill-current" : ""} />
+              {trackMouseEnabled ? "Track Mouse (1.5× Follow On)" : "Track Mouse (1.5×)"}
+            </button>
+
+            {trackMouseEnabled && workspaceMode === "interactive" && (
+              <div className="flex items-center gap-2">
+                <span className="text-2xs font-mono text-zinc-400">Scrub:</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={lastTake.durationMs}
+                  value={previewScrubMs}
+                  onChange={(e) => setPreviewScrubMs(Number(e.target.value))}
+                  className="w-36 accent-emerald-500 h-1.5 bg-zinc-700 rounded-lg cursor-pointer"
+                />
+                <span className="text-2xs font-mono text-zinc-300">{previewScrubMs}ms</span>
+              </div>
+            )}
+          </div>
+
+          <div className="text-2xs text-zinc-400 flex items-center gap-2">
+            <span>1.5× camera math computed deterministically via</span>
+            <span className="font-mono text-emerald-400 font-medium">MouseFollowCamera</span>
+          </div>
+        </div>
+      )}
 
       {/* Bottom Control / Transport Bar */}
       <div className="border-border-subtle bg-surface-panel flex h-11 shrink-0 items-center justify-between border-t px-3">
