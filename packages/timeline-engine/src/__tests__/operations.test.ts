@@ -1,15 +1,34 @@
 import { describe, expect, it } from "vitest";
-import type { VideoContent } from "@cutaway/types";
+import { DESKTOP_CONTENT_TYPES, type Clip, type VideoContent } from "@cutaway/types";
 import {
   computeDuration,
   moveClip,
   rippleDelete,
   rippleInsert,
   splitClip,
+  splitClipRefusal,
   trimClipEnd,
   trimClipStart,
 } from "../operations";
 import { makeClip } from "./fixtures";
+
+/**
+ * A Desktop Stage action clip.
+ *
+ * Actions are the one content kind the engine refuses to split: the desktop
+ * resolver applies an action once per clip, so two halves would execute it
+ * twice — `appendLine` would append its line twice.
+ */
+function actionClip(overrides: Partial<Clip> = {}): Clip {
+  return makeClip({
+    content: {
+      kind: "plugin",
+      contentType: DESKTOP_CONTENT_TYPES.action,
+      data: { instanceId: "app-one", action: "appendLine", text: "hello" },
+    },
+    ...overrides,
+  });
+}
 
 describe("splitClip", () => {
   it("splits into two adjacent halves with no gap or overlap", () => {
@@ -62,6 +81,44 @@ describe("splitClip", () => {
 
     expect(left.id).toBe("original");
     expect(right.id).toBe("fresh");
+  });
+});
+
+describe("splitClip — action clips", () => {
+  it("refuses to split an action clip so the action cannot run twice", () => {
+    const clip = actionClip({ startFrame: 10, durationFrames: 100 });
+    expect(splitClip(clip, 60, "clip-2")).toBeNull();
+  });
+
+  it("explains the refusal so the UI can show it", () => {
+    const clip = actionClip({ startFrame: 10, durationFrames: 100 });
+    expect(splitClipRefusal(clip, 60)).toMatch(/action clips can't be split/i);
+  });
+
+  it("recognises an action payload from a later version by its base type", () => {
+    const clip = actionClip({
+      content: { kind: "plugin", contentType: "desktop-stage/action@2", data: {} },
+    });
+    expect(splitClip(clip, 50, "clip-2")).toBeNull();
+  });
+
+  it("has nothing to explain when the playhead is not a split point", () => {
+    const clip = actionClip({ startFrame: 10, durationFrames: 100 });
+
+    expect(splitClipRefusal(clip, 10)).toBeNull();
+    expect(splitClipRefusal(clip, 110)).toBeNull();
+    expect(splitClipRefusal(clip, 200)).toBeNull();
+  });
+
+  it("still splits a drawable plugin clip such as an app window", () => {
+    const windowClip = makeClip({
+      content: { kind: "plugin", contentType: DESKTOP_CONTENT_TYPES.app, data: { instanceId: "app-one" } },
+      startFrame: 0,
+      durationFrames: 100,
+    });
+
+    expect(splitClipRefusal(windowClip, 50)).toBeNull();
+    expect(splitClip(windowClip, 50, "clip-2")).not.toBeNull();
   });
 });
 

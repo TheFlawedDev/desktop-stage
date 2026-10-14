@@ -169,3 +169,33 @@ describe("removeMediaAsset", () => {
     expect(restored?.thumbnailKey).toBe("thumb-1");
   });
 });
+
+describe("split refusal notice", () => {
+  beforeEach(() => {
+    useEditorStore.getState().replaceProject(createStarterProject());
+  });
+
+  it("explains why an action clip cannot be split instead of doing nothing", () => {
+    // `action-focus-terminal` covers frames [90, 120).
+    useEditorStore.setState({ selectedClipIds: ["action-focus-terminal"], playhead: 100 });
+    const before = Object.keys(useEditorStore.getState().project.entities.clips).length;
+
+    useEditorStore.getState().splitAtPlayhead();
+
+    const state = useEditorStore.getState();
+    expect(state.notice).toMatch(/action clips can't be split/i);
+    // Refused, not half-applied: the timeline still holds exactly the same clips.
+    expect(Object.keys(state.project.entities.clips)).toHaveLength(before);
+  });
+
+  it("clears the notice once a split succeeds", () => {
+    useEditorStore
+      .getState()
+      .replaceProject(projectWithClips("track-1", videoClip("clip-1", "track-1", 0, 30)));
+    useEditorStore.setState({ playhead: 10, notice: "stale message" });
+
+    useEditorStore.getState().splitAtPlayhead();
+
+    expect(useEditorStore.getState().notice).toBeNull();
+  });
+});

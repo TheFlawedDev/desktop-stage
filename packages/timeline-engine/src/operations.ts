@@ -10,11 +10,46 @@
  * so callers can skip pushing a meaningless undo entry.
  */
 
-import type { Clip, Frame, FrameDuration, Id } from "@cutaway/types";
+import {
+  DESKTOP_CONTENT_TYPES,
+  type Clip,
+  type Frame,
+  type FrameDuration,
+  type Id,
+} from "@cutaway/types";
 import { rangeOf } from "./range";
 
 /** Minimum clip length. Zero-length clips are unselectable and unrenderable. */
 export const MIN_CLIP_FRAMES = 1;
+
+/**
+ * Base of a versioned content type: `desktop-stage/action@1` → `desktop-stage/action`.
+ *
+ * The payload version lives inside the content-type string, so recognising a
+ * family means comparing bases; an exact string match would stop matching the
+ * moment a `@2` payload ships.
+ */
+function contentTypeBase(contentType: string): string {
+  const separator = contentType.lastIndexOf("@");
+  return separator < 0 ? contentType : contentType.slice(0, separator);
+}
+
+const DESKTOP_ACTION_CONTENT_BASE = contentTypeBase(DESKTOP_CONTENT_TYPES.action);
+
+/**
+ * True for a Desktop Stage action clip.
+ *
+ * Actions are one-shot state changes — `appendLine` appends a line, `open`
+ * reveals a window — that the desktop resolver applies once per clip from the
+ * clip's start frame onwards. Two clips carrying one action means running it
+ * twice.
+ */
+function isDesktopActionClip(clip: Clip): boolean {
+  const { content } = clip;
+  return (
+    content.kind === "plugin" && contentTypeBase(content.contentType) === DESKTOP_ACTION_CONTENT_BASE
+  );
+}
 
 /**
  * Advances a clip's source in-point, for content kinds that read from media.
@@ -35,13 +70,40 @@ function advanceSource(clip: Clip, byFrames: number): Clip["content"] {
 }
 
 /**
+ * Why `splitClip` refuses this clip, or `null` when it can be split.
+ *
+ * `splitClip` answers `null` both for "there is nothing to split here" and for
+ * "this clip must not be split", which is the right answer for a pure operation
+ * but useless to a person. The UI asks this first so it can explain the refusal
+ * instead of appearing to do nothing.
+ *
+ * A split point outside the clip, or on its very edge, is deliberately not
+ * reported: that is not an error, so there is nothing to tell the user.
+ */
+export function splitClipRefusal(clip: Clip, atFrame: Frame): string | null {
+  const { start, end } = rangeOf(clip);
+  if (atFrame <= start || atFrame >= end) return null;
+  if (atFrame - start < MIN_CLIP_FRAMES || end - atFrame < MIN_CLIP_FRAMES) return null;
+
+  if (isDesktopActionClip(clip)) {
+    return "Action clips can't be split — both halves would apply the action, running it twice. Move or trim it instead.";
+  }
+
+  return null;
+}
+
+/**
  * Splits a clip at an absolute timeline frame.
  *
  * Returns `null` if the frame falls on or outside the clip's boundaries — there
  * is nothing to split there, and producing a zero-length half would be worse
- * than refusing.
+ * than refusing — or if the clip is one {@link splitClipRefusal} refuses.
  */
 export function splitClip(clip: Clip, atFrame: Frame, newId: Id): [Clip, Clip] | null {
+  // A rule refusal comes first, so both refusal paths return through the one
+  // `null` the callers already understand.
+  if (splitClipRefusal(clip, atFrame) !== null) return null;
+
   const { start, end } = rangeOf(clip);
   if (atFrame <= start || atFrame >= end) return null;
 

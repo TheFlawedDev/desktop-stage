@@ -35,6 +35,8 @@ export function TimelinePanel() {
   const clearInOut = useEditorStore((state) => state.clearInOut);
 
   const hasRange = inPoint !== null || outPoint !== null;
+  // Cleared on seek, so this only ever explains the command just attempted.
+  const notice = useEditorStore((state) => state.notice);
 
   return (
     <Panel bare className="border-border-subtle border-t">
@@ -92,6 +94,12 @@ export function TimelinePanel() {
           )}
 
           <div className="flex-1" />
+
+          {notice && (
+            <span role="status" className="text-2xs mr-2 truncate text-amber-500">
+              {notice}
+            </span>
+          )}
 
           {selectionCount > 0 && (
             <span className="text-text-tertiary mr-2 text-xs">{selectionCount} selected</span>

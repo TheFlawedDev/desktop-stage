@@ -11,7 +11,13 @@ import type {
   ProjectDocument,
   Track,
 } from "@cutaway/types";
-import { computeDuration, moveClip, rippleDelete, splitClip } from "@cutaway/timeline-engine";
+import {
+  computeDuration,
+  moveClip,
+  rippleDelete,
+  splitClip,
+  splitClipRefusal,
+} from "@cutaway/timeline-engine";
 import { retimeBlock, shiftBlock } from "@cutaway/caption-engine";
 import { createClipForAsset, trackKindForAsset } from "@cutaway/media-engine";
 import { createId, createProject, createTrack } from "@cutaway/utils";
@@ -69,6 +75,11 @@ export interface EditorState {
   inPoint: Frame | null;
   /** Export out-point (exclusive), or null for "to the end". */
   outPoint: Frame | null;
+  /**
+   * One-line reason the last command did nothing, shown next to the timeline
+   * tools. Ephemeral like the rest of this half — never saved, never undone.
+   */
+  notice: string | null;
 
   // --- Actions ---
   setPlayhead: (frame: Frame) => void;
@@ -210,8 +221,11 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   snapEnabled: true,
   inPoint: null,
   outPoint: null,
+  notice: null,
 
-  setPlayhead: (frame) => set({ playhead: Math.max(0, Math.round(frame)) }),
+  // Seeking is how someone reacts to a refused command, so it also clears the
+  // explanation rather than leaving a stale message in the toolbar.
+  setPlayhead: (frame) => set({ playhead: Math.max(0, Math.round(frame)), notice: null }),
 
   // In/out points keep `inPoint < outPoint` whenever both are set, so the export
   // range they define is always valid; setting one past the other clears the
@@ -325,8 +339,20 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
             );
 
       let didSplit = false;
+      // Refusals are collected rather than thrown: one unsplittable clip must
+      // not stop the others, and the user still needs to know why nothing
+      // happened to that one.
+      const refusals: string[] = [];
+
       for (const clip of candidates) {
         if (clip.locked) continue;
+
+        const refusal = splitClipRefusal(clip, playhead);
+        if (refusal) {
+          refusals.push(refusal);
+          continue;
+        }
+
         const result = splitClip(clip, playhead, createId("clip"));
         if (!result) continue;
 
@@ -336,13 +362,16 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         didSplit = true;
       }
 
-      if (!didSplit) return state;
+      if (!didSplit) return { notice: refusals[0] ?? null };
 
-      return commit(
-        state,
-        withDerived({ ...state.project, entities: { ...state.project.entities, clips } }),
-        "Split clip",
-      );
+      return {
+        notice: refusals[0] ?? null,
+        ...commit(
+          state,
+          withDerived({ ...state.project, entities: { ...state.project.entities, clips } }),
+          "Split clip",
+        ),
+      };
     }),
 
   deleteSelected: () =>
@@ -445,6 +474,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       isPlaying: false,
       inPoint: null,
       outPoint: null,
+      notice: null,
     }),
 
   newProject: () =>
@@ -459,6 +489,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         isPlaying: false,
         inPoint: null,
         outPoint: null,
+        notice: null,
       };
     }),
 
