@@ -10,7 +10,7 @@ import {
 } from "../serialize";
 import { validateProject } from "../validate";
 import { migrateDocument } from "../migrate";
-import type { Mask, MediaAsset, ProjectDocument } from "@cutaway/types";
+import type { Mask, MediaAsset, ProjectDocument, TextContent } from "@cutaway/types";
 
 function imageAsset(id: string): MediaAsset {
   return {
@@ -379,6 +379,90 @@ describe("validateProject repair", () => {
     for (const id of ["phantomTrack", "phantomProto", "phantomMedia"]) {
       expect(issues.some((i) => i.severity === "dropped" && i.subject === `clip:${id}`)).toBe(true);
     }
+  });
+
+  it("resets an animatable whose value does not fit the property", () => {
+    const project = populatedProject();
+    const clipId = Object.keys(project.entities.clips)[0]!;
+    const clip = project.entities.clips[clipId]!;
+
+    const { project: repaired } = validateProject({
+      ...project,
+      entities: {
+        ...project.entities,
+        clips: {
+          [clipId]: {
+            ...clip,
+            content: {
+              kind: "text",
+              text: "hi",
+              color: { type: "static", value: "#ff0000" },
+            },
+            transform: {
+              ...clip.transform,
+              // A lossless JSON leaf, but `position.x` is then `undefined` and
+              // the compositor silently computes NaN geometry.
+              position: { type: "static", value: "not-a-point" },
+              rotation: { type: "static", value: "45" },
+            },
+            appearance: {
+              ...clip.appearance,
+              opacity: {
+                type: "animated",
+                keyframes: [{ frame: 0, value: "opaque", easing: { kind: "linear" } }],
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const fixed = repaired.entities.clips[clipId]!;
+    expect(fixed.transform.position).toEqual({ type: "static", value: { x: 0, y: 0 } });
+    expect(fixed.transform.rotation).toEqual({ type: "static", value: 0 });
+    expect(fixed.appearance.opacity).toEqual({ type: "static", value: 1 });
+    // A string property still accepts a string; the shape check is not a ban on
+    // the non-numeric `Animatable` types.
+    expect((fixed.content as TextContent).color).toEqual({ type: "static", value: "#ff0000" });
+  });
+
+  it("keeps string, boolean, and vector effect parameters", () => {
+    const project = populatedProject();
+    const clipId = Object.keys(project.entities.clips)[0]!;
+    const clip = project.entities.clips[clipId]!;
+
+    const { project: repaired } = validateProject({
+      ...project,
+      entities: {
+        ...project.entities,
+        clips: {
+          [clipId]: {
+            ...clip,
+            effects: [
+              {
+                id: "e1",
+                effectId: "core.tint",
+                enabled: true,
+                params: {
+                  color: { type: "static", value: "#ff0000" },
+                  enabled: { type: "static", value: true },
+                  radius: { type: "static", value: 4 },
+                  falloff: { type: "static", value: [0, 1] },
+                  broken: { type: "static", value: { x: 1, y: 2 } },
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    const params = repaired.entities.clips[clipId]!.effects[0]!.params;
+    expect(params.color).toEqual({ type: "static", value: "#ff0000" });
+    expect(params.enabled).toEqual({ type: "static", value: true });
+    expect(params.radius).toEqual({ type: "static", value: 4 });
+    expect(params.falloff).toEqual({ type: "static", value: [0, 1] });
+    expect(params.broken).toEqual({ type: "static", value: 0 });
   });
 });
 

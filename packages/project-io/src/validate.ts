@@ -779,12 +779,33 @@ function validateActionTargets(
   }
 }
 
-/** True when every number inside a value is finite. */
-function isFiniteValue(value: unknown): boolean {
-  if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every(isFiniteValue);
-  if (isRecord(value)) return Object.values(value).every(isFiniteValue);
-  return true;
+/**
+ * True when `value` has the same shape as the property's default and every
+ * number in it is finite.
+ *
+ * The shape check is what keeps `"not-a-point"` out of an `Animatable<Vec2>`:
+ * it is a lossless JSON leaf, but `position.x` is then `undefined`, the
+ * compositor computes `NaN` geometry, and nothing explains the invisible object.
+ */
+function matchesValueShape(value: unknown, fallback: unknown): boolean {
+  if (isFiniteNumber(fallback)) return isFiniteNumber(value);
+  if (typeof fallback === "string") return typeof value === "string";
+  if (typeof fallback === "boolean") return typeof value === "boolean";
+  if (Array.isArray(fallback)) return Array.isArray(value) && value.every(isFiniteNumber);
+  if (isRecord(fallback)) {
+    return (
+      isRecord(value) &&
+      Object.keys(fallback).every((key) => matchesValueShape(value[key], fallback[key]))
+    );
+  }
+  return false;
+}
+
+/** Effect parameters are open-ended but stay serializable scalars and vectors. */
+function isEffectParamValue(value: unknown): boolean {
+  if (typeof value === "string" || typeof value === "boolean") return true;
+  if (Array.isArray(value)) return value.every(isFiniteNumber);
+  return isFiniteNumber(value);
 }
 
 /**
@@ -826,12 +847,14 @@ function repairEasing(
 }
 
 /**
- * Repairs one animatable: drops keyframes with a non-finite frame or value, and
- * restores a static value when nothing survives.
+ * Repairs one animatable: drops keyframes with a non-finite frame or a value
+ * that does not match the property, and restores a static value when nothing
+ * survives.
  *
  * A single `NaN` in a keyframe poisons every frame it influences — the rendered
  * object disappears and nothing in the UI explains why — so values are checked
- * rather than trusted, and every repair is reported.
+ * rather than trusted, and every repair is reported. `accepts` defaults to the
+ * shape of `fallback`, which is what pins a scalar property to a finite number.
  */
 function repairAnimatable<T>(
   raw: unknown,
@@ -839,6 +862,7 @@ function repairAnimatable<T>(
   label: string,
   subject: string,
   issues: ValidationIssue[],
+  accepts: (value: unknown) => boolean = (value) => matchesValueShape(value, fallback),
 ): Animatable<T> {
   if (!isRecord(raw)) {
     issues.push({
@@ -850,12 +874,12 @@ function repairAnimatable<T>(
   }
 
   if (raw.type === "static") {
-    if ("value" in raw && isFiniteValue(raw.value)) return raw as unknown as Animatable<T>;
+    if ("value" in raw && accepts(raw.value)) return raw as unknown as Animatable<T>;
 
     issues.push({
       severity: "repaired",
       subject,
-      message: `Clip ${label} held a non-finite value and was reset.`,
+      message: `Clip ${label} held an unreadable value and was reset.`,
     });
     return { type: "static", value: fallback };
   }
@@ -869,7 +893,7 @@ function repairAnimatable<T>(
         !isRecord(candidate) ||
         !isFiniteNumber(candidate.frame) ||
         !("value" in candidate) ||
-        !isFiniteValue(candidate.value)
+        !accepts(candidate.value)
       ) {
         removed += 1;
         continue;
@@ -1241,7 +1265,14 @@ function repairEffects(
         setOwn(
           params,
           key,
-          repairAnimatable(value, 0, `effect parameter "${key}"`, subject, issues),
+          repairAnimatable(
+            value,
+            0,
+            `effect parameter "${key}"`,
+            subject,
+            issues,
+            isEffectParamValue,
+          ),
         );
       }
     }
