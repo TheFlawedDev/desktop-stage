@@ -67,6 +67,13 @@ store and the web app passes the IndexedDB store from `useMediaImportContext().s
   manifest as unbundled rather than silently dropped, and the UI says how many did not travel.
 - **Caches are not shipped.** Thumbnails and waveforms are rebuilt from the source bytes after
   import.
+- **Size is checked before anything is unpacked.** Import reads each bundled entry's declared
+  uncompressed and compressed sizes from the ZIP central directory, and compares them with the
+  manifest's `byteSize`. An entry that disagrees, that exceeds the per-asset or aggregate ceiling, or
+  that is compressed past a practical ratio is rejected without inflating it; `manifest.json` and
+  `project.json` are bounded too. The ceilings are `DEFAULT_ARCHIVE_LIMITS` in `archive.ts` (4 GiB per
+  asset, 16 GiB in total, 200:1, 64 MiB per metadata file) and can be lowered per import through
+  `ArchiveImportOptions.limits`.
 
 The UI side lives in `apps/web/src/features/project/`:
 
