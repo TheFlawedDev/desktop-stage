@@ -13,7 +13,7 @@
  * caller-visible result — see `importFile`.
  */
 
-import type { MediaAsset, MediaKind } from "@cutaway/types";
+import type { MediaAsset, MediaKind, MediaMetadata } from "@cutaway/types";
 import { createId } from "@cutaway/utils";
 import { classifyFile } from "./mime";
 import { generateThumbnail, probeMedia } from "./probe";
@@ -49,7 +49,10 @@ function blobKey(assetId: string, suffix: string): string {
  * the import on it would leave the user staring at a spinner when the clip is
  * already usable.
  */
-export async function importFile(file: File, context: ImportContext): Promise<MediaAsset> {
+export async function importFile(
+  file: File,
+  context: ImportContext,
+): Promise<MediaAsset> {
   const kind: MediaKind | null = classifyFile(file.name, file.type);
   if (!kind) throw new UnsupportedMediaError(file.name);
 
@@ -57,7 +60,19 @@ export async function importFile(file: File, context: ImportContext): Promise<Me
   const sourceKey = blobKey(id, "source");
 
   await context.store.put(sourceKey, file);
-  const metadata = await probeMedia(file);
+
+  let metadata: MediaMetadata;
+  try {
+    metadata = await probeMedia(file);
+  } catch (error) {
+    // The bytes are staged but no asset references them, and there is no sweep
+    // in the app that would reclaim them (see docs/DEVELOPMENT.md, "Deferred
+    // media cleanup"). Delete exactly the key this call just wrote — never a
+    // stored key, and never a key a user-removed asset still owns — then report
+    // the original failure.
+    await context.store.delete(sourceKey).catch(() => {});
+    throw error;
+  }
 
   const asset: MediaAsset = {
     id,
@@ -136,7 +151,9 @@ export async function importFiles(
   files: readonly File[],
   context: ImportContext,
 ): Promise<ImportResult> {
-  const settled = await Promise.allSettled(files.map((file) => importFile(file, context)));
+  const settled = await Promise.allSettled(
+    files.map((file) => importFile(file, context)),
+  );
 
   const assets: MediaAsset[] = [];
   const errors: ImportResult["errors"] = [];
@@ -165,7 +182,10 @@ export async function importFiles(
  */
 export const DEFAULT_STILL_DURATION_SECONDS = 5;
 
-export function assetDurationInFrames(asset: MediaAsset, projectFrameRate: number): number {
+export function assetDurationInFrames(
+  asset: MediaAsset,
+  projectFrameRate: number,
+): number {
   const seconds =
     asset.metadata.durationSeconds > 0
       ? asset.metadata.durationSeconds
