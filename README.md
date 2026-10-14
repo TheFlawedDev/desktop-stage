@@ -12,13 +12,13 @@ It is an early prototype. It is honest about that below.
   document is normalized JSON with integer-frame timing, and preview and video export resolve the
   *same* scene, so what you saw is what you get.
 - **A starter scene** — the prototype's four-window fictional desktop (browser, code, terminal,
-  note), converted into the current document model, plus two action clips that show how the action
+  note), converted into the current document model, plus three action clips that show how the action
   row targets an app instance.
 - **Media import** — video, audio, and images are copied into this browser's IndexedDB, with
   thumbnails and waveforms generated locally. Large files never leave the machine.
 - **Portable project archives** — `.desktopstage` files carry the project *and* the original bytes
-  of every referenced media file, so a media-rich project can move to another computer. This is the
-  primary way to share or back up a project.
+  of every referenced media file this browser stores, so a media-rich project can move to another
+  computer. This is the primary way to share or back up a project.
 - **Project JSON** — export and import of the document alone, including projects saved by the
   original version 1 prototype.
 - **Video export** — MP4 (H.264/AAC) or WebM (VP9/Opus), rendered with WebCodecs.
