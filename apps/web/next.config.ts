@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
@@ -28,6 +29,8 @@ const nextConfig: NextConfig = {
     "@cutaway/mask-engine",
     "@cutaway/caption-engine",
     "@cutaway/color-engine",
+    "@cutaway/effects-engine",
+    "@cutaway/export-engine",
     "@cutaway/ui",
     "@desktop-stage/desktop-engine",
   ],
@@ -40,7 +43,7 @@ const nextConfig: NextConfig = {
    * silently breaks resolution of the workspace packages above.
    */
   turbopack: {
-    root: "../../",
+    root: join(__dirname, "..", ".."),
   },
 };
 
