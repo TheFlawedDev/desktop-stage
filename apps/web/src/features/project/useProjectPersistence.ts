@@ -1,13 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { collectGarbage } from "@cutaway/media-engine";
 import {
   archiveFileName,
   exportProjectArchive,
   importProjectArchive,
   parseProjectFile,
-  referencedBlobKeys,
   serializeProject,
   projectFileName,
   type ArchiveProgress,
@@ -25,7 +23,6 @@ import { useMediaImportContext } from "@/features/media/MediaImportProvider";
 import { useEditorStore } from "@/state/editorStore";
 import {
   isStorageAvailable,
-  listProjects,
   loadMostRecentProject,
   saveProject,
 } from "@/state/projectStorage";
@@ -38,6 +35,7 @@ import {
   unbundledAssetNotice,
   type ArchiveNotice,
 } from "./projectFiles";
+import { restoreStoredProject } from "./restoreStoredProject";
 
 /**
  * Autosave, restore, and file import/export.
@@ -74,6 +72,25 @@ const APP_VERSION = "0.2.0";
 
 /** How much of a file to read when deciding what it is. Enough for a ZIP head. */
 const FILE_HEAD_BYTES = 512;
+
+/**
+ * Shown when a document is newer than this build understands.
+ *
+ * Informational, not a refusal: the document is repaired and opened, and the
+ * warning is what stops a later autosave from quietly downgrading it.
+ */
+const FUTURE_PROJECT_MESSAGE =
+  "This project was saved by a newer version of Desktop Stage; some data may be lost on save.";
+
+/**
+ * How far startup restore has got.
+ *
+ * `pending` blocks every write, so the starter document in memory can never
+ * pre-empt the project being read. `failed` is deliberately not a write block:
+ * the record that failed to open keeps its own id, and the in-memory document is
+ * a starter with a fresh id, so saving the session cannot land on top of it.
+ */
+type RestoreState = "pending" | "restored" | "empty" | "failed";
 
 /**
  * A file's leading bytes, or null when even that cannot be read.
@@ -170,8 +187,8 @@ export function useProjectPersistence(): ProjectPersistence {
   const [lastArchiveBytes, setLastArchiveBytes] = useState<number | null>(null);
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** Blocks autosave until the restore attempt has finished. */
-  const restoredRef = useRef(false);
+  /** Where the startup restore got to; gates every write until it finishes. */
+  const restoreStateRef = useRef<RestoreState>("pending");
   /** The converted legacy document, held from discovery until the user decides. */
   const legacyProjectRef = useRef<ProjectDocument | null>(null);
   /**
@@ -214,7 +231,7 @@ export function useProjectPersistence(): ProjectPersistence {
     }
   }, []);
 
-  // --- Restore on startup, then sweep orphaned media --------------------
+  // --- Restore on startup, then offer the prototype project --------------
   useEffect(() => {
     let cancelled = false;
 
@@ -246,46 +263,67 @@ export function useProjectPersistence(): ProjectPersistence {
       try {
         if (!isStorageAvailable()) {
           setSaveState("unavailable");
+          restoreStateRef.current = "empty";
           considerLegacyCandidate(false);
           return;
         }
 
         let hasRestoredProject = false;
+
         try {
           const stored = await loadMostRecentProject();
+
           if (!cancelled && stored) {
-            replaceProject(stored.document);
-            setLastSavedAt(stored.savedAt);
-            setSaveState("saved");
-            hasRestoredProject = true;
+            // The stored record is untrusted input: it may have been written by
+            // another build, or be a partial write. Migrate and validate it
+            // exactly like a file before the editor renders it, and report what
+            // was repaired or dropped.
+            const result = restoreStoredProject(stored.document);
+
+            if (result.ok) {
+              replaceProject(result.restored.project);
+              setLastSavedAt(stored.savedAt);
+              setSaveState("saved");
+
+              const messages = [...result.restored.issues];
+              if (result.restored.fromFuture) messages.unshift(FUTURE_PROJECT_MESSAGE);
+              setLoadIssues(messages);
+
+              hasRestoredProject = true;
+              restoreStateRef.current = "restored";
+            } else {
+              // The record is left exactly as it is. The document now in memory
+              // is the starter scene with its own fresh id, so nothing this
+              // session saves can be written on top of the project that failed
+              // to open.
+              setLoadIssues([result.error]);
+              restoreStateRef.current = "failed";
+            }
+          } else {
+            restoreStateRef.current = "empty";
           }
-        } catch {
-          // A failed restore must never block the editor from opening. It is
-          // treated as "nothing restored"; the offer below is still an explicit
-          // user choice, so an unread shelf cannot cause a silent replacement.
+        } catch (error) {
+          // A failed read must never block the editor from opening, and must not
+          // be treated as "no project here": the stored record stays untouched
+          // (the in-memory starter has a different id).
+          const detail = error instanceof Error ? error.message : String(error);
+          setLoadIssues([`The saved project could not be read: ${detail}`]);
+          restoreStateRef.current = "failed";
         }
 
         if (!cancelled) considerLegacyCandidate(hasRestoredProject);
 
-        try {
-          // Sweep media belonging to no stored project. The referenced set must
-          // span *every* project, not just the restored one — otherwise opening
-          // project A would delete project B's footage.
-          const all = await listProjects();
-          const referenced = new Set<string>();
-          for (const entry of all) {
-            for (const key of referencedBlobKeys(entry.document)) referenced.add(key);
-          }
-
-          await collectGarbage(store(), referenced);
-        } catch {
-          // Sweeping is best effort; orphaned blobs cost disk, not correctness.
-        }
+        // Blob garbage collection deliberately does **not** run here. Its
+        // "referenced" set is built from *stored* documents, so it cannot see
+        // media staged by another tab's in-flight archive import, or bytes an
+        // unsaved/undone edit still points at; it would delete live media. The
+        // cost of not sweeping is disk space, which is the safer failure. See
+        // docs/DEVELOPMENT.md — "Deferred media cleanup".
       } finally {
-        // Autosave stays blocked until here, so the starter document can never
-        // overwrite the project being restored — or land in the slot the legacy
-        // offer is about to fill.
-        restoredRef.current = true;
+        // Any path that did not settle explicitly counts as failed. Autosave is
+        // then unblocked, but the starter's fresh id means the write lands in a
+        // new record rather than over the one that could not be read.
+        if (restoreStateRef.current === "pending") restoreStateRef.current = "failed";
       }
     })();
 
@@ -297,13 +335,13 @@ export function useProjectPersistence(): ProjectPersistence {
   }, []);
 
   // --- Debounced autosave ----------------------------------------------
-  // Nothing is written while `restoredRef` is false. That covers the startup
+  // Nothing is written until the restore has finished. That covers the startup
   // window in both directions: the starter document cannot land before the
   // stored project is read, and the legacy candidate — which lives in
   // `localStorage` and is read, never written, here — is untouched until the
   // user decides.
   useEffect(() => {
-    if (!restoredRef.current) return;
+    if (restoreStateRef.current === "pending") return;
 
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => void persist(project), AUTOSAVE_DELAY_MS);
@@ -316,6 +354,12 @@ export function useProjectPersistence(): ProjectPersistence {
   // --- Save on the way out ---------------------------------------------
   useEffect(() => {
     const handleBeforeUnload = () => {
+      // Nothing may be flushed before the restore has read the shelf: until then
+      // the in-memory document is the starter scene, and writing it would put a
+      // project the user never authored on the shelf with a newer `savedAt` than
+      // the one being restored.
+      if (restoreStateRef.current === "pending") return;
+
       // A pending debounce would be lost when the tab closes, so the latest
       // state is flushed synchronously-ish here. Best effort: browsers do not
       // guarantee async work during unload, and there is no UI left to report a
@@ -504,9 +548,7 @@ export function useProjectPersistence(): ProjectPersistence {
         ...result.issues.map((issue) => issue.message),
       ];
       if (result.fromFuture) {
-        messages.unshift(
-          "This project was saved by a newer version of Desktop Stage; some data may be lost on save.",
-        );
+        messages.unshift(FUTURE_PROJECT_MESSAGE);
       }
       setLoadIssues(messages);
     },
