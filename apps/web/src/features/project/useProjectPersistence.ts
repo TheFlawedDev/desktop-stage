@@ -11,6 +11,7 @@ import {
   type ArchiveProgress,
 } from "@cutaway/project-io";
 import type { ProjectDocument } from "@cutaway/types";
+import { createId } from "@cutaway/utils";
 import {
   browserLegacyStorage,
   inspectLegacyProjectText,
@@ -35,7 +36,11 @@ import {
   unbundledAssetNotice,
   type ArchiveNotice,
 } from "./projectFiles";
-import { restoreStoredProject } from "./restoreStoredProject";
+import { ProjectWriteGate, type ManualSaveOutcome } from "./projectWriteGate";
+import {
+  restoreStoredProject,
+  RESTORE_RECOVERED_MESSAGE,
+} from "./restoreStoredProject";
 
 /**
  * Autosave, restore, and file import/export.
@@ -86,11 +91,12 @@ const FUTURE_PROJECT_MESSAGE =
  * How far startup restore has got.
  *
  * `pending` blocks every write, so the starter document in memory can never
- * pre-empt the project being read. `failed` is deliberately not a write block:
- * the record that failed to open keeps its own id, and the in-memory document is
- * a starter with a fresh id, so saving the session cannot land on top of it.
+ * pre-empt the project being read. `failed` is deliberately not a write block
+ * for the *automatic* writers: the in-memory document is a starter with a fresh
+ * id, so the write cannot land on top of the record that failed to open. A
+ * *manual* save is the exception — it is skipped rather than silently creating a
+ * second record; see `ProjectWriteGate`.
  */
-type RestoreState = "pending" | "restored" | "empty" | "failed";
 
 /**
  * A file's leading bytes, or null when even that cannot be read.
@@ -154,7 +160,14 @@ export interface ProjectPersistence {
   /** Issues reported by the last load, e.g. clips dropped during repair. */
   loadIssues: string[];
   dismissIssues: () => void;
-  saveNow: () => Promise<void>;
+  /**
+   * Writes the open document now.
+   *
+   * Waits for the startup restore first: a save pressed inside that window
+   * would otherwise write the starter document over the shelf. Reports whether
+   * the write actually happened.
+   */
+  saveNow: () => Promise<ManualSaveOutcome>;
   /**
    * Downloads the document alone as JSON.
    *
@@ -182,13 +195,32 @@ export function useProjectPersistence(): ProjectPersistence {
   const [legacyStatus, setLegacyStatus] = useState<LegacyImportStatus>("idle");
   const [legacyError, setLegacyError] = useState<string | null>(null);
   const [archivePhase, setArchivePhase] = useState<ArchivePhase>("idle");
-  const [archiveProgress, setArchiveProgress] = useState<ArchiveProgress | null>(null);
-  const [archiveNotice, setArchiveNotice] = useState<ArchiveNotice | null>(null);
+  const [archiveProgress, setArchiveProgress] =
+    useState<ArchiveProgress | null>(null);
+  const [archiveNotice, setArchiveNotice] = useState<ArchiveNotice | null>(
+    null,
+  );
   const [lastArchiveBytes, setLastArchiveBytes] = useState<number | null>(null);
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** Where the startup restore got to; gates every write until it finishes. */
-  const restoreStateRef = useRef<RestoreState>("pending");
+  /**
+   * Where the startup restore got to; gates every write until it finishes.
+   *
+   * The automatic writers read `restoreGate.state` directly, while a manual save
+   * goes through `runManualSave`, which waits for the restore instead of
+   * reporting a save that never happened.
+   */
+  const restoreGate = useRef(
+    new ProjectWriteGate(() => {
+      // A save was asked for before the restore settled and was not written.
+      // Saying so beats a silent no-op on Ctrl+S.
+      const notice =
+        "Still opening the saved project; press save again in a moment.";
+      setLoadIssues((current) =>
+        current.includes(notice) ? current : [...current, notice],
+      );
+    }),
+  ).current;
   /** The converted legacy document, held from discovery until the user decides. */
   const legacyProjectRef = useRef<ProjectDocument | null>(null);
   /**
@@ -250,20 +282,35 @@ export function useProjectPersistence(): ProjectPersistence {
       const candidateJson = readLegacyCandidateJson(storage);
       if (!candidateJson) return;
 
-      const candidate = inspectLegacyProjectText(candidateJson);
+      const candidate = inspectLegacyProjectText(
+        candidateJson,
+        createId("project"),
+      );
       const decision = readLegacyImportDecision(storage);
       if (candidate.kind !== "converted") return;
-      if (!shouldOfferLegacyImport({ hasRestoredProject, decision, candidate })) return;
+      if (!shouldOfferLegacyImport({ hasRestoredProject, decision, candidate }))
+        return;
 
       legacyProjectRef.current = candidate.project;
       if (!cancelled) setLegacyStatus("offered");
+    };
+
+    /**
+     * Records where the restore ended, for every write path to read.
+     *
+     * The gate keeps the state; `settle` is the only writer and ignores a
+     * second call, so the `finally` below can settle defensively without
+     * un-settling a real outcome.
+     */
+    const settleRestore = (state: "restored" | "empty" | "failed") => {
+      restoreGate.settle(state);
     };
 
     void (async () => {
       try {
         if (!isStorageAvailable()) {
           setSaveState("unavailable");
-          restoreStateRef.current = "empty";
+          settleRestore("empty");
           considerLegacyCandidate(false);
           return;
         }
@@ -275,9 +322,9 @@ export function useProjectPersistence(): ProjectPersistence {
 
           if (!cancelled && stored) {
             // The stored record is untrusted input: it may have been written by
-            // another build, or be a partial write. Migrate and validate it
-            // exactly like a file before the editor renders it, and report what
-            // was repaired or dropped.
+            // another build (newer or older), or edited outside the app. Migrate
+            // and validate it before the editor renders it, and report what was
+            // repaired or dropped.
             const result = restoreStoredProject(stored.document);
 
             if (result.ok) {
@@ -286,21 +333,30 @@ export function useProjectPersistence(): ProjectPersistence {
               setSaveState("saved");
 
               const messages = [...result.restored.issues];
-              if (result.restored.fromFuture) messages.unshift(FUTURE_PROJECT_MESSAGE);
+              if (result.restored.fromFuture)
+                messages.unshift(FUTURE_PROJECT_MESSAGE);
+              // A repaired or future document is opened as a fresh-id copy, so
+              // the record it came from is never overwritten by the next
+              // autosave. The copy is a new record, so its saved time is now.
+              if (result.restored.recovered) {
+                messages.unshift(RESTORE_RECOVERED_MESSAGE);
+                setLastSavedAt(Date.now());
+              }
               setLoadIssues(messages);
 
               hasRestoredProject = true;
-              restoreStateRef.current = "restored";
+              settleRestore("restored");
             } else {
               // The record is left exactly as it is. The document now in memory
               // is the starter scene with its own fresh id, so nothing this
               // session saves can be written on top of the project that failed
-              // to open.
+              // to open. A manual save is refused rather than allowed to create
+              // that second record; see `ProjectWriteGate`.
               setLoadIssues([result.error]);
-              restoreStateRef.current = "failed";
+              settleRestore("failed");
             }
           } else {
-            restoreStateRef.current = "empty";
+            settleRestore("empty");
           }
         } catch (error) {
           // A failed read must never block the editor from opening, and must not
@@ -308,7 +364,7 @@ export function useProjectPersistence(): ProjectPersistence {
           // (the in-memory starter has a different id).
           const detail = error instanceof Error ? error.message : String(error);
           setLoadIssues([`The saved project could not be read: ${detail}`]);
-          restoreStateRef.current = "failed";
+          settleRestore("failed");
         }
 
         if (!cancelled) considerLegacyCandidate(hasRestoredProject);
@@ -322,8 +378,9 @@ export function useProjectPersistence(): ProjectPersistence {
       } finally {
         // Any path that did not settle explicitly counts as failed. Autosave is
         // then unblocked, but the starter's fresh id means the write lands in a
-        // new record rather than over the one that could not be read.
-        if (restoreStateRef.current === "pending") restoreStateRef.current = "failed";
+        // new record rather than over the one that could not be read. The gate
+        // ignores this second settle when a real outcome already landed.
+        settleRestore("failed");
       }
     })();
 
@@ -341,10 +398,13 @@ export function useProjectPersistence(): ProjectPersistence {
   // `localStorage` and is read, never written, here — is untouched until the
   // user decides.
   useEffect(() => {
-    if (restoreStateRef.current === "pending") return;
+    if (restoreGate.state === "pending") return;
 
     if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => void persist(project), AUTOSAVE_DELAY_MS);
+    timerRef.current = setTimeout(
+      () => void persist(project),
+      AUTOSAVE_DELAY_MS,
+    );
 
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
@@ -358,7 +418,7 @@ export function useProjectPersistence(): ProjectPersistence {
       // the in-memory document is the starter scene, and writing it would put a
       // project the user never authored on the shelf with a newer `savedAt` than
       // the one being restored.
-      if (restoreStateRef.current === "pending") return;
+      if (restoreGate.state === "pending") return;
 
       // A pending debounce would be lost when the tab closes, so the latest
       // state is flushed synchronously-ish here. Best effort: browsers do not
@@ -371,10 +431,16 @@ export function useProjectPersistence(): ProjectPersistence {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, []);
 
-  const saveNow = useCallback(async () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    await persist(useEditorStore.getState().project);
-  }, [persist]);
+  const saveNow = useCallback(async (): Promise<ManualSaveOutcome> => {
+    // The explicit save is the third writer: `Ctrl/Cmd+S` is live from mount,
+    // and inside the restore window the in-memory document is the starter. The
+    // gate waits for the restore rather than writing the starter into the shelf
+    // with a newer `savedAt` than the project being restored.
+    return restoreGate.runManualSave(async () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      await persist(useEditorStore.getState().project);
+    });
+  }, [persist, restoreGate]);
 
   /**
    * Document-only JSON export.
@@ -386,7 +452,9 @@ export function useProjectPersistence(): ProjectPersistence {
    */
   const downloadProject = useCallback(() => {
     const current = useEditorStore.getState().project;
-    const blob = new Blob([serializeProject(current)], { type: "application/json" });
+    const blob = new Blob([serializeProject(current)], {
+      type: "application/json",
+    });
     const fileName = projectFileName(current.name);
 
     downloadBlob(blob, fileName);
@@ -523,7 +591,11 @@ export function useProjectPersistence(): ProjectPersistence {
       // project with the wrong contents instead of being converted. This is also
       // how a v1 JSON gets in from another origin, where the old `localStorage`
       // is unreadable by definition.
-      const legacy = inspectLegacyProjectText(text);
+      //
+      // The project id is minted here, per import: the converter's default id is
+      // a constant, so importing two different v1 files would otherwise write
+      // both into one stored record and lose the first.
+      const legacy = inspectLegacyProjectText(text, createId("project"));
       if (legacy.kind === "converted") {
         replaceProject(legacy.project);
         setLoadIssues([]);
@@ -583,7 +655,9 @@ export function useProjectPersistence(): ProjectPersistence {
       setSaveState("saved");
     } catch (error) {
       setLegacyError(
-        error instanceof Error ? error.message : "The saved project could not be imported.",
+        error instanceof Error
+          ? error.message
+          : "The saved project could not be imported.",
       );
       setLegacyStatus("error");
       return;
