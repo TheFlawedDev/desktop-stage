@@ -570,6 +570,8 @@ export class DesktopWindowView extends Container {
   private readonly titleText = new Text({ text: "" });
   private readonly toolbarTexts: Text[] = [];
   private readonly bodyTexts: Text[] = [];
+  /** Shape of the last synced window, so an unchanged window costs one compare. */
+  private lastKey: string | null = null;
 
   constructor() {
     super();
@@ -580,11 +582,16 @@ export class DesktopWindowView extends Container {
   /**
    * Draws `payload` at `width` × `height`.
    *
-   * Called on every frame the window is on screen; Pixi's `Text` setters no-op
-   * when the value is unchanged, so an unchanged window costs a handful of
-   * comparisons rather than new geometry.
+   * Called on every frame the window is on screen — including the many frames
+   * where only its position changed. Those frames return immediately: the
+   * layout is a pure function of the window's shape, so an unchanged shape means
+   * the geometry and the text runs are already right.
    */
   sync(payload: DesktopWindowNodePayload, width: number, height: number): void {
+    const key = syncKey(payload, width, height);
+    if (key === this.lastKey) return;
+    this.lastKey = key;
+
     const layout = layoutDesktopWindow(payload, width, height);
 
     this.drawFrame(layout, payload);
@@ -658,6 +665,30 @@ export class DesktopWindowView extends Container {
     this.bodyTexts.length = 0;
     super.destroy(options);
   }
+}
+
+/**
+ * Everything the drawn window depends on, as one comparable string.
+ *
+ * Position is deliberately absent: a window that only moved needs no redraw, and
+ * its node transform carries the movement. Rotating a title or appending a
+ * terminal line changes this key and the window is rebuilt.
+ */
+function syncKey(payload: DesktopWindowNodePayload, width: number, height: number): string {
+  const { look } = payload;
+  return [
+    payload.instanceId,
+    payload.appKind,
+    payload.title,
+    payload.lines.join("\u0000"),
+    look.accentColor,
+    look.theme,
+    look.chrome,
+    look.cornerRadius,
+    look.showTitleBar,
+    width,
+    height,
+  ].join("\u0001");
 }
 
 function applyTextRun(text: Text, run: WindowTextRun): void {

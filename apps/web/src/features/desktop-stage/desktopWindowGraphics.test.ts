@@ -271,6 +271,25 @@ describe("layoutDesktopWindow", () => {
     expect(layout.bodyY).toBe(layout.titleBarHeight + layout.toolbarHeight);
     expect(layout.bodyX).toBeGreaterThan(0);
   });
+
+  /**
+   * The window view skips redrawing when a frame left the window's shape alone,
+   * which is only safe because the layout is a pure function of that shape. This
+   * pins the two halves of that contract: same shape, same layout; different
+   * shape, different layout.
+   */
+  it("is a pure function of the payload and the resolved size", () => {
+    const payload = windowPayload({ appKind: "code", title: "src/login.ts" });
+    const first = layoutDesktopWindow(payload, 350, 310);
+    const second = layoutDesktopWindow(payload, 350, 310);
+    expect(second).toEqual(first);
+
+    const resized = layoutDesktopWindow(payload, 350, 200);
+    expect(resized).not.toEqual(first);
+
+    const retitled = layoutDesktopWindow({ ...payload, title: "src/other.ts" }, 350, 310);
+    expect(retitled.title.text).not.toBe(first.title.text);
+  });
 });
 
 describe("bodyLineColor", () => {
