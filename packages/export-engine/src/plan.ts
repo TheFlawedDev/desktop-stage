@@ -8,7 +8,14 @@
  * unit-tested without a browser.
  */
 
-import type { ExportSettings, Frame, ProjectDocument, Size } from "@cutaway/types";
+import {
+  DESKTOP_CONTENT_TYPES,
+  type ClipContent,
+  type ExportSettings,
+  type Frame,
+  type ProjectDocument,
+  type Size,
+} from "@cutaway/types";
 
 /** A validated, backend-agnostic description of an export job. */
 export interface ExportPlan {
@@ -46,12 +53,46 @@ interface RangeContent {
 }
 
 /**
+ * Base of a versioned content type: `desktop-stage/action@1` → `desktop-stage/action`.
+ *
+ * The payload version is part of the content-type string, so recognising a
+ * family means comparing bases — an exact match would stop matching a `@2`.
+ */
+function contentTypeBase(contentType: string): string {
+  const separator = contentType.lastIndexOf("@");
+  return separator < 0 ? contentType : contentType.slice(0, separator);
+}
+
+/**
+ * Desktop Stage families that put no pixels on screen.
+ *
+ * An action clip only changes an app window's state, and a camera row only
+ * reframes what is already there. A range that holds nothing but these renders
+ * black even though it is full of clips, so counting them as picture would let
+ * exactly that range pass the "there is content here" check — the case where the
+ * desktop visuals are hidden but their actions remain.
+ */
+const NONVISUAL_DESKTOP_CONTENT_BASES: ReadonlySet<string> = new Set([
+  contentTypeBase(DESKTOP_CONTENT_TYPES.action),
+  contentTypeBase(DESKTOP_CONTENT_TYPES.camera),
+]);
+
+/** True when a plugin clip draws nothing by itself. */
+function isNonvisualPlugin(content: ClipContent): boolean {
+  return (
+    content.kind === "plugin" &&
+    NONVISUAL_DESKTOP_CONTENT_BASES.has(contentTypeBase(content.contentType))
+  );
+}
+
+/**
  * Counts what a range would actually render.
  *
  * Hidden clips and clips on hidden tracks are skipped, because the renderer
  * skips them too — counting them would let a "there is content here" check pass
- * for a range that draws nothing. Ranges are half-open on both sides, matching
- * the timeline.
+ * for a range that draws nothing. Nonvisual plugin clips are counted as neither
+ * picture nor sound for the same reason. Ranges are half-open on both sides,
+ * matching the timeline.
  */
 function contentInRange(project: ProjectDocument, start: Frame, end: Frame): RangeContent {
   const { clips, tracks, captionTracks } = project.entities;
@@ -62,7 +103,10 @@ function contentInRange(project: ProjectDocument, start: Frame, end: Frame): Ran
     if (clipEnd <= start || clip.startFrame >= end) continue;
     if (clip.hidden || tracks[clip.trackId]?.hidden) continue;
     if (clip.content.kind === "audio") content.audio += 1;
-    else content.visual += 1;
+    // An unknown plugin type still counts as picture: this engine cannot know
+    // what a plugin it has never heard of draws, and refusing a render is worse
+    // than allowing a black one with a warning.
+    else if (!isNonvisualPlugin(clip.content)) content.visual += 1;
   }
 
   for (const track of Object.values(captionTracks)) {

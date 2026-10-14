@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { ExportSettings, ProjectDocument, ProjectEntities } from "@cutaway/types";
+import {
+  DESKTOP_CONTENT_TYPES,
+  type ExportSettings,
+  type ProjectDocument,
+  type ProjectEntities,
+} from "@cutaway/types";
 import {
   ExportPlanError,
   describeExport,
@@ -48,6 +53,68 @@ const project = (durationFrames: number, over: Partial<ProjectEntities> = {}): P
 /** A project whose timeline is empty — nothing to render at any frame. */
 const emptyProject = (durationFrames: number): ProjectDocument =>
   project(durationFrames, { clips: {} });
+
+/** A Desktop Stage plugin clip spanning the whole range. */
+const pluginClip = (id: string, trackId: string, contentType: string) => ({
+  id,
+  trackId,
+  startFrame: 0,
+  durationFrames: 150,
+  hidden: false,
+  content: { kind: "plugin", contentType, data: {} },
+});
+
+/** Overwrites a test document's clip and track tables with desktop content. */
+function withDesktopEntities(
+  doc: ProjectDocument,
+  clips: Record<string, unknown>,
+  tracks: Record<string, unknown>,
+): ProjectDocument {
+  const entities = doc.entities as unknown as {
+    clips: Record<string, unknown>;
+    tracks: Record<string, unknown>;
+  };
+  entities.clips = clips;
+  entities.tracks = tracks;
+  return doc;
+}
+
+/** One app window and one action clip, each on its own track. */
+function desktopProject(desktopTrackHidden: boolean): ProjectDocument {
+  return withDesktopEntities(
+    project(150),
+    {
+      w1: pluginClip("w1", "t-desktop", DESKTOP_CONTENT_TYPES.app),
+      a1: pluginClip("a1", "t-action", DESKTOP_CONTENT_TYPES.action),
+    },
+    {
+      "t-desktop": { id: "t-desktop", kind: "desktop", hidden: desktopTrackHidden },
+      "t-action": { id: "t-action", kind: "action", hidden: false },
+    },
+  );
+}
+
+describe("planExport — nonvisual desktop content", () => {
+  it("refuses a range left black because only actions remain visible", () => {
+    // Hiding the window track leaves the action visible. The renderer would visit
+    // that clip and draw nothing, so the range must not pass as "has content".
+    expect(() => planExport(desktopProject(true), settings())).toThrow(/no clips/i);
+  });
+
+  it("refuses a project that contains nothing but desktop actions", () => {
+    const doc = withDesktopEntities(
+      project(150),
+      { a1: pluginClip("a1", "t-action", DESKTOP_CONTENT_TYPES.action) },
+      { "t-action": { id: "t-action", kind: "action", hidden: false } },
+    );
+
+    expect(() => planExport(doc, settings())).toThrow(/no clips/i);
+  });
+
+  it("still counts a visible app window as picture", () => {
+    expect(planExport(desktopProject(false), settings()).warnings).toEqual([]);
+  });
+});
 
 describe("planExport — empty renders", () => {
   it("refuses a range with no clips at all rather than rendering a blank file", () => {
