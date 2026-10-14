@@ -26,10 +26,24 @@ export interface StoredProject {
   document: ProjectDocument;
 }
 
+/**
+ * Read/write failures, kept as `Error`s so callers can distinguish them from
+ * whatever IndexedDB itself raised.
+ */
+const OPEN_BLOCKED_MESSAGE =
+  "Project storage is held open by another tab, so it could not be opened. Close other tabs of the editor and try again.";
+
 let databasePromise: Promise<IDBDatabase> | null = null;
 
-function openDatabase(): Promise<IDBDatabase> {
-  databasePromise ??= new Promise((resolve, reject) => {
+/**
+ * Opens the project database, caching the connection.
+ *
+ * The cached promise is only ever a *pending or fulfilled* one: a blocked or
+ * failed open resets the cache, so a later autosave retries instead of reusing
+ * a rejection for the rest of the session.
+ */
+function createDatabasePromise(): Promise<IDBDatabase> {
+  const pending = new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
 
     request.onupgradeneeded = () => {
@@ -39,13 +53,51 @@ function openDatabase(): Promise<IDBDatabase> {
       }
     };
 
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    // Fires when another connection holds an older version open. Without a
+    // handler the open never settles and the status bar says "Saving…" forever.
+    request.onblocked = () => reject(new Error(OPEN_BLOCKED_MESSAGE));
+    request.onerror = () =>
+      reject(request.error ?? new Error("Project storage could not be opened."));
+    request.onsuccess = () => {
+      const database = request.result;
+
+      // Another tab upgrading or deleting the database closes this connection.
+      // Drop the cached handle so the next operation reopens instead of failing
+      // with `InvalidStateError` for the life of the tab.
+      database.onversionchange = () => {
+        database.close();
+        databasePromise = null;
+      };
+
+      resolve(database);
+    };
   });
 
-  return databasePromise;
+  return pending.catch((error: unknown) => {
+    databasePromise = null;
+    throw error;
+  });
 }
 
+function openDatabase(): Promise<IDBDatabase> {
+  const cached = databasePromise;
+  if (cached) return cached;
+
+  const created = createDatabasePromise();
+  databasePromise = created;
+  return created;
+}
+
+/**
+ * Runs one request in its own transaction.
+ *
+ * The promise settles on the **transaction**, not the request: `request
+ * .onsuccess` only means the request was processed, and a readwrite transaction
+ * can still abort at commit on quota enforcement, an I/O error, or a torn-down
+ * connection. Resolving there would let callers report bytes as saved before
+ * they are, so the request's result is captured and handed over from
+ * `tx.oncomplete`; an abort or error rejects.
+ */
 function runTransaction<T>(
   mode: IDBTransactionMode,
   run: (store: IDBObjectStore) => IDBRequest<T>,
@@ -53,12 +105,34 @@ function runTransaction<T>(
   return openDatabase().then(
     (database) =>
       new Promise<T>((resolve, reject) => {
-        const tx = database.transaction(PROJECT_STORE, mode);
+        let tx: IDBTransaction;
+        try {
+          tx = database.transaction(PROJECT_STORE, mode);
+        } catch (error) {
+          // The cached connection was closed underneath us (another tab
+          // upgraded, or site data was cleared). Let the next call reopen.
+          databasePromise = null;
+          reject(error);
+          return;
+        }
+
         const request = run(tx.objectStore(PROJECT_STORE));
 
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-        tx.onabort = () => reject(tx.error);
+        let result: T | undefined;
+        let hasResult = false;
+
+        request.onsuccess = () => {
+          result = request.result;
+          hasResult = true;
+        };
+        request.onerror = () => reject(request.error ?? new Error("The storage request failed."));
+
+        tx.oncomplete = () => {
+          if (hasResult) resolve(result as T);
+          else reject(new Error("The storage transaction completed without a result."));
+        };
+        tx.onabort = () => reject(tx.error ?? new Error("The storage transaction was aborted."));
+        tx.onerror = () => reject(tx.error ?? new Error("The storage transaction failed."));
       }),
   );
 }
