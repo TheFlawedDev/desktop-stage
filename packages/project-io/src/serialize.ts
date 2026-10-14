@@ -91,16 +91,24 @@ export function parseProjectFile(contents: string): ParseResult {
     return { ok: false, error: "Project data is missing from the file." };
   }
 
-  const migrated = migrateDocument(rawProject as RawDocument);
-  const { project, issues } = validateProject(migrated.document);
+  // `validateProject` is written to be total, but this is the last line of
+  // defence before a document reaches the editor: an unexpected failure here is
+  // reported as a load error rather than thrown into the caller's render loop.
+  try {
+    const migrated = migrateDocument(rawProject as RawDocument);
+    const { project, issues } = validateProject(migrated.document);
 
-  return {
-    ok: true,
-    project,
-    issues,
-    migrations: migrated.applied,
-    fromFuture: migrated.fromFuture,
-  };
+    return {
+      ok: true,
+      project,
+      issues,
+      migrations: migrated.applied,
+      fromFuture: migrated.fromFuture,
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: `Project data could not be read: ${detail}` };
+  }
 }
 
 /** Filesystem-safe filename for a project. */

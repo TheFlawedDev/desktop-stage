@@ -217,6 +217,226 @@ describe("validateProject repair", () => {
   });
 });
 
+describe("validateProject totality on malformed JSON", () => {
+  it("rebuilds a clip whose transform and appearance are missing", () => {
+    const project = populatedProject();
+    const clipId = Object.keys(project.entities.clips)[0]!;
+
+    const partial: Record<string, unknown> = { ...project.entities.clips[clipId]! };
+    delete partial.transform;
+    delete partial.appearance;
+
+    const { project: repaired, issues } = validateProject({
+      ...project,
+      entities: { ...project.entities, clips: { [clipId]: partial } },
+    });
+
+    const clip = repaired.entities.clips[clipId]!;
+    expect(clip.transform.position).toEqual({ type: "static", value: { x: 0, y: 0 } });
+    expect(clip.transform.anchor).toEqual({ type: "static", value: { x: 0.5, y: 0.5 } });
+    expect(clip.appearance.opacity).toEqual({ type: "static", value: 1 });
+    expect(clip.appearance.shadow.blur).toEqual({ type: "static", value: 12 });
+    expect(issues.some((i) => i.severity === "repaired")).toBe(true);
+  });
+
+  it("replaces an animated property whose keyframes are all unusable", () => {
+    const project = populatedProject();
+    const clipId = Object.keys(project.entities.clips)[0]!;
+    const clip = project.entities.clips[clipId]!;
+
+    const { project: repaired } = validateProject({
+      ...project,
+      entities: {
+        ...project.entities,
+        clips: {
+          [clipId]: {
+            ...clip,
+            appearance: {
+              ...clip.appearance,
+              opacity: { type: "animated", keyframes: [{ frame: "nope", value: 1 }] },
+            },
+          },
+        },
+      },
+    });
+
+    // An animated value with zero usable keyframes throws in `evaluate`, so it
+    // must be collapsed to a static value rather than kept.
+    expect(repaired.entities.clips[clipId]!.appearance.opacity).toEqual({
+      type: "static",
+      value: 1,
+    });
+  });
+
+  it("resets a null mask list and drops a null mask entry", () => {
+    const project = populatedProject();
+    const clipId = Object.keys(project.entities.clips)[0]!;
+    const clip = project.entities.clips[clipId]!;
+
+    const nullList = validateProject({
+      ...project,
+      entities: { ...project.entities, clips: { [clipId]: { ...clip, masks: null } } },
+    });
+    expect(nullList.project.entities.clips[clipId]!.masks).toEqual([]);
+    expect(nullList.issues.some((i) => /mask list/i.test(i.message))).toBe(true);
+
+    const nullEntry = validateProject({
+      ...project,
+      entities: { ...project.entities, clips: { [clipId]: { ...clip, masks: [null] } } },
+    });
+    expect(nullEntry.project.entities.clips[clipId]!.masks).toEqual([]);
+    expect(nullEntry.issues.some((i) => i.severity === "dropped")).toBe(true);
+  });
+
+  it("fills in missing media metadata instead of leaving the panel to crash", () => {
+    const project = populatedProject();
+    const asset = project.entities.media.m1!;
+
+    const { project: repaired, issues } = validateProject({
+      ...project,
+      entities: { ...project.entities, media: { m1: { ...asset, metadata: undefined } } },
+    });
+
+    expect(repaired.entities.media.m1!.metadata).toEqual({
+      durationSeconds: 0,
+      frameRate: null,
+      dimensions: null,
+      hasAudio: false,
+      hasVideo: false,
+      codec: null,
+      sampleRate: null,
+      channels: null,
+      byteSize: 0,
+    });
+    expect(issues.some((i) => i.subject === "media:m1" && i.severity === "repaired")).toBe(true);
+    expect(() => referencedBlobKeys(repaired)).not.toThrow();
+  });
+
+  it("repairs malformed caption tracks and blocks", () => {
+    const project = createProject();
+
+    const { project: repaired, issues } = validateProject({
+      ...project,
+      entities: {
+        ...project.entities,
+        captionTracks: {
+          good: {
+            id: "good",
+            sourceMediaId: null,
+            language: "en",
+            presetId: "core.captions.tiktok",
+            blocks: [
+              {
+                id: "b1",
+                words: [{ text: "hello", startFrame: 0, endFrame: 5, confidence: 0.9 }],
+                startFrame: 0,
+                endFrame: 5,
+                styleOverrideId: null,
+              },
+            ],
+          },
+          gone: null,
+          notBlocks: { id: "notBlocks", blocks: "nope" },
+          nullBlock: { id: "nullBlock", blocks: [null] },
+        },
+      },
+    });
+
+    expect(repaired.entities.captionTracks.gone).toBeUndefined();
+    expect(repaired.entities.captionTracks.notBlocks!.blocks).toEqual([]);
+    expect(repaired.entities.captionTracks.nullBlock!.blocks).toEqual([]);
+    expect(repaired.entities.captionTracks.good!.blocks[0]!.words[0]!.text).toBe("hello");
+    expect(issues.some((i) => i.severity === "dropped")).toBe(true);
+  });
+
+  it("never throws and always returns a render-safe project for arbitrary junk", () => {
+    const inputs: unknown[] = [
+      null,
+      undefined,
+      0,
+      "x",
+      [],
+      { entities: null },
+      { entities: { clips: null, tracks: null, media: null, markers: null, captionTracks: null } },
+      { entities: { clips: { c: null }, tracks: { t: null }, media: { m: 3 } } },
+      {
+        schemaVersion: "x",
+        settings: { resolution: { width: 0, height: -1 }, frameRate: 0 },
+        entities: {
+          tracks: { t1: { id: "t1" } },
+          media: { m1: { id: "m1", source: { type: "indexeddb", key: "k" } } },
+          clips: {
+            c1: {
+              id: "c1",
+              trackId: "t1",
+              startFrame: 0,
+              durationFrames: 5,
+              content: { kind: "text" },
+            },
+          },
+        },
+      },
+    ];
+
+    for (const input of inputs) {
+      expect(() => validateProject(input)).not.toThrow();
+
+      const { project } = validateProject(input);
+      expect(project.settings.resolution.width).toBeGreaterThan(0);
+      expect(project.settings.resolution.height).toBeGreaterThan(0);
+
+      for (const clip of Object.values(project.entities.clips)) {
+        expect(Array.isArray(clip.masks)).toBe(true);
+        expect(Array.isArray(clip.effects)).toBe(true);
+        expect(clip.transform.position).toBeDefined();
+        expect(clip.appearance.opacity).toBeDefined();
+      }
+
+      for (const asset of Object.values(project.entities.media)) {
+        expect(asset.metadata).toBeDefined();
+        expect(typeof asset.metadata.byteSize).toBe("number");
+      }
+
+      for (const track of Object.values(project.entities.captionTracks)) {
+        expect(Array.isArray(track.blocks)).toBe(true);
+      }
+    }
+  });
+});
+
+describe("parseProjectFile malformed documents", () => {
+  it("repairs a deeply malformed document instead of failing the load", () => {
+    const raw = JSON.stringify({
+      schemaVersion: 1,
+      settings: { resolution: { width: 640, height: 360 }, frameRate: 30 },
+      entities: {
+        tracks: { t1: { id: "t1" } },
+        media: { m1: { id: "m1", source: { type: "indexeddb", key: "k" } } },
+        clips: {
+          c1: {
+            id: "c1",
+            trackId: "t1",
+            startFrame: 0,
+            durationFrames: 10,
+            content: { kind: "image", mediaId: "m1" },
+          },
+        },
+      },
+    });
+
+    const result = parseProjectFile(raw);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.project.entities.clips.c1!.transform.rotation).toEqual({
+      type: "static",
+      value: 0,
+    });
+    expect(result.project.entities.media.m1!.metadata.byteSize).toBe(0);
+    expect(result.project.entities.captionTracks).toEqual({});
+  });
+});
+
 describe("migrateDocument", () => {
   it("stamps the current version on an unversioned document", () => {
     expect(migrateDocument({}).document.schemaVersion).toBe(SCHEMA_VERSION);
