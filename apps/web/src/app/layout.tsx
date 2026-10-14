@@ -32,8 +32,8 @@ export default function RootLayout({
   return (
     // `data-theme` is set here rather than by a client script: dark is the
     // default, so there is no flash to avoid and no hydration mismatch to risk.
-    <html lang="en" data-theme="dark" className={`${inter.variable} h-full`}>
-      <body className="h-full overflow-hidden">{children}</body>
+    <html lang="en" data-theme="dark" className={`${inter.variable} h-full`} suppressHydrationWarning>
+      <body className="h-full overflow-hidden" suppressHydrationWarning>{children}</body>
     </html>
   );
 }

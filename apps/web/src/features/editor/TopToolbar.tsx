@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Import,
   Keyboard,
+  MonitorPlay,
   Redo2,
   Share2,
   Undo2,
@@ -20,6 +21,7 @@ import { useProject } from "@/features/project/ProjectProvider";
 import { PROJECT_FILE_ACCEPT } from "@/features/project/projectFiles";
 import { ExportDialog } from "@/features/export/ExportDialog";
 import { ShortcutsDialog } from "./ShortcutsDialog";
+import { StageStudioModal } from "@/features/stage-studio/StageStudioModal";
 
 export function TopToolbar() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -38,6 +40,7 @@ export function TopToolbar() {
 
   const undoable = history.past.length > 0;
   const redoable = history.future.length > 0;
+  const [showStudio, setShowStudio] = useState(false);
 
   // One flag for the whole archive flow, so a second Share click during packing
   // — or an Open during an import — cannot start overlapping work.
@@ -51,6 +54,15 @@ export function TopToolbar() {
         </div>
         <span className="text-text-primary text-sm font-semibold">Desktop Stage</span>
       </div>
+
+      <Button
+        size="sm"
+        variant="primary"
+        icon={<MonitorPlay size={14} />}
+        onClick={() => setShowStudio(true)}
+      >
+        Interactive Stage
+      </Button>
 
       <div className="bg-border-subtle mx-1 h-5 w-px" />
 
@@ -165,6 +177,7 @@ export function TopToolbar() {
       </Button>
 
       <ExportButton />
+      <StageStudioModal isOpen={showStudio} onClose={() => setShowStudio(false)} />
     </header>
   );
 }
