@@ -177,7 +177,7 @@ export function TopToolbar() {
       </Button>
 
       <ExportButton />
-      <StageStudioModal isOpen={showStudio} onClose={() => setShowStudio(false)} />
+      {showStudio && <StageStudioModal isOpen={showStudio} onClose={() => setShowStudio(false)} />}
     </header>
   );
 }

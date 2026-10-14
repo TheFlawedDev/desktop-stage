@@ -150,8 +150,6 @@ export function StageStudioModal({ isOpen, onClose }: StageStudioModalProps) {
     return () => clearInterval(interval);
   }, [isRecording]);
 
-  if (!isOpen) return null;
-
   // Window drag handlers
   const handleWindowHeaderMouseDown = (e: React.MouseEvent, win: StageWindowConfig) => {
     wm.focusWindow(win.id);
@@ -317,6 +315,8 @@ export function StageStudioModal({ isOpen, onClose }: StageStudioModalProps) {
       1.5
     );
   }, [camera, lastTake, trackMouseEnabled, previewScrubMs]);
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md">
