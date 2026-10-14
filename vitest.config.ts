@@ -42,7 +42,11 @@ export default defineConfig({
   },
   test: {
     pool: "threads",
-    include: ["packages/*/src/**/*.test.ts", "apps/web/src/**/*.test.ts"],
-    exclude: ["**/node_modules/**", "**/.next/**", "**/dist/**"],
+    include: [
+      "packages/*/src/**/*.test.ts",
+      "apps/web/src/**/*.test.ts",
+      "tests/**/*.test.ts",
+    ],
+    exclude: ["**/node_modules/**", "**/.next/**", "**/dist/**", "**/.worktrees/**"],
   },
 });
