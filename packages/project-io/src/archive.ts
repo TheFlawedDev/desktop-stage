@@ -36,6 +36,7 @@ import {
   type FileEntry,
 } from "@zip.js/zip.js";
 import { migrateDocument } from "./migrate";
+import { setOwn } from "./own";
 import { parseProjectFile } from "./serialize";
 import { validateProject, type ValidationIssue } from "./validate";
 
@@ -126,16 +127,22 @@ export interface ArchiveExportResult {
  *
  * An archive is attacker-controlled input, and a small file can describe a
  * very large one. These bound one asset and the whole set. The defaults are
- * generous enough for ordinary media-rich projects — a single 4 GB source clip
- * is unusual, and a project bundling more than 16 GB is beyond what a browser
- * blob store holds — while staying far below what a decompression bomb asks
- * for. Every number is read from the ZIP central directory, so enforcing them
- * never inflates a byte.
+ * sized for what a browser tab can actually hold: import reads *every* asset
+ * before the first write, so peak memory is the sum, not one asset, and the
+ * aggregate ceiling is the number that matters. 512 MiB for one asset and
+ * 2 GiB in total leave ordinary media-rich projects room — a single 4 GB source
+ * clip and a 16 GB project are both beyond a browser blob store to begin with —
+ * while staying far below what a decompression bomb asks for. Every number is
+ * read from the ZIP central directory, so enforcing them never inflates a byte;
+ * note that they bound *declared output*, not the memory the decode retains.
+ *
+ * A caller that genuinely needs more can raise either through
+ * `ArchiveImportOptions.limits`.
  */
 export interface ArchiveLimits {
-  /** Largest single asset, after decompression, in bytes. Default 4 GiB. */
+  /** Largest single asset, after decompression, in bytes. Default 512 MiB. */
   maxAssetBytes: number;
-  /** Largest total of every bundled asset, after decompression. Default 16 GiB. */
+  /** Largest total of every bundled asset, after decompression. Default 2 GiB. */
   maxTotalBytes: number;
   /** Largest uncompressed:compressed ratio tolerated. Default 200:1. */
   maxCompressionRatio: number;
@@ -150,8 +157,8 @@ export interface ArchiveLimits {
 }
 
 export const DEFAULT_ARCHIVE_LIMITS: ArchiveLimits = {
-  maxAssetBytes: 4 * 1024 * 1024 * 1024,
-  maxTotalBytes: 16 * 1024 * 1024 * 1024,
+  maxAssetBytes: 512 * 1024 * 1024,
+  maxTotalBytes: 2 * 1024 * 1024 * 1024,
   maxCompressionRatio: 200,
   maxMetadataBytes: 64 * 1024 * 1024,
 };
@@ -588,6 +595,11 @@ function assertArchiveAssetSizes(
     }
 
     const compressed = entry.compressedSize;
+    if (size > 0 && compressed === 0) {
+      details.push(`${label} declares 0 compressed bytes for ${size} uncompressed bytes`);
+      continue;
+    }
+
     if (
       size >= ARCHIVE_COMPRESSION_RATIO_FLOOR_BYTES &&
       compressed > 0 &&
@@ -637,6 +649,19 @@ function mergeIssues(
   }
 
   return merged;
+}
+
+/** The media id a manifest path claims, or null when it does not match one. */
+function mediaIdForArchivePath(path: string): string | null {
+  if (!isArchiveAssetPath(path)) return null;
+
+  const segment = path.slice(ARCHIVE_ASSET_DIRECTORY.length + 1);
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    // Not a percent-encoding; no id could have produced it.
+    return null;
+  }
 }
 
 /**
@@ -719,7 +744,29 @@ export async function importProjectArchive(
         continue;
       }
 
-      const entry = byName.get(listed.archivePath) ?? byName.get(archiveAssetPath(asset.id));
+      // The bytes a project sees must be the bytes its manifest named for that
+      // asset id. Accepting a path that names a different asset — or falling
+      // back to the canonical path when the recorded one is stale — would
+      // silently substitute one asset's data for another, so a mismatch is
+      // reported instead: either the entry the manifest points at, or nothing.
+      //
+      // Compatibility: the path must be the entry this build writes for the id
+      // (`archiveAssetPath`), or the equivalent path an older build wrote, which
+      // is the same segment with `.` left literal. Older exports are compared by
+      // id rather than by exact string so they keep importing; an id that cannot
+      // survive the round trip is not one they could have written.
+      const canonicalPath = archiveAssetPath(asset.id);
+      const legacyEquivalent =
+        listed.archivePath !== canonicalPath &&
+        mediaIdForArchivePath(listed.archivePath) === asset.id;
+      if (listed.archivePath !== canonicalPath && !legacyEquivalent) {
+        problems.push(
+          `${asset.name} is listed as ${listed.archivePath}, which is not the entry for its own id ${asset.id} (${canonicalPath})`,
+        );
+        continue;
+      }
+
+      const entry = byName.get(listed.archivePath);
       if (!entry) {
         problems.push(`${asset.name} is listed as ${listed.archivePath} but that entry is missing`);
         continue;
@@ -731,7 +778,7 @@ export async function importProjectArchive(
     if (problems.length > 0) {
       throw new ArchiveError(
         "invalid-archive",
-        `The archive is missing ${problems.length} media source${problems.length === 1 ? "" : "s"}.`,
+        `The archive has ${problems.length} unusable media source${problems.length === 1 ? "" : "s"}.`,
         problems,
       );
     }
@@ -794,11 +841,15 @@ export async function importProjectArchive(
     for (const [id, asset] of Object.entries(media)) {
       const plan = plannedStaging.find((candidate) => candidate.mediaId === id);
       if (!plan) {
-        remapped[id] = asset;
+        // Media ids survive validation as own keys, so this write must be an
+        // own-key write too: `remapped["__proto__"] = asset` would make the
+        // asset the map's prototype and drop it from the project on the next
+        // save. See `own.ts`.
+        setOwn(remapped, id, asset);
         continue;
       }
 
-      remapped[id] = {
+      setOwn(remapped, id, {
         ...asset,
         source: { type: "indexeddb", key: plan.key },
         metadata: { ...asset.metadata, byteSize: plan.blob.size },
@@ -806,7 +857,7 @@ export async function importProjectArchive(
         // bytes rather than shipped, which keeps archives smaller.
         thumbnailKey: null,
         waveformKey: null,
-      };
+      });
     }
 
     const migrated = migrateDocument({ ...parsed.project, entities: { ...parsed.project.entities, media: remapped } });

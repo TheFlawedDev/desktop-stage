@@ -14,6 +14,7 @@
  */
 
 import { SCHEMA_VERSION } from "@cutaway/types";
+import { setOwn } from "./own";
 
 export type RawDocument = Record<string, unknown>;
 
@@ -70,10 +71,12 @@ function stampDesktopContentVersions(document: RawDocument): RawDocument {
   for (const [id, clip] of Object.entries(clips)) {
     const stamped = stampClipContentType(clip);
     if (stamped) {
-      nextClips[id] = stamped;
+      // Clip ids come from the file: a plain `nextClips[id] = …` would rewrite
+      // the map's prototype for `"__proto__"` and lose the clip entirely.
+      setOwn(nextClips, id, stamped);
       changed = true;
     } else {
-      nextClips[id] = clip;
+      setOwn(nextClips, id, clip);
     }
   }
 

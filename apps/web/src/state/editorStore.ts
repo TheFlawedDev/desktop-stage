@@ -156,6 +156,20 @@ function withDerived(project: ProjectDocument): ProjectDocument {
 }
 
 /**
+ * Writes a clip or asset onto a map keyed by a document id.
+ *
+ * Ids are file data: `JSON.parse('{"__proto__": …}')` makes an *own*
+ * `"__proto__"` property, and a plain `map["__proto__"] = value` assignment
+ * invokes the `Object.prototype` setter — the entry becomes the map's prototype
+ * and disappears from the timeline. `Object.defineProperty` always stores an own
+ * property. `@cutaway/project-io` has the same guard in its `own.ts`; the store
+ * keeps its own copy rather than importing a validator internal.
+ */
+function setOwn<T>(map: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(map, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
+/**
  * Records a document change in both the live state and the undo history.
  *
  * `mergeKey` collapses a continuous gesture into one undo step — dragging a clip
@@ -317,8 +331,8 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         if (!result) continue;
 
         const [left, right] = result;
-        clips[left.id] = left;
-        clips[right.id] = right;
+        setOwn(clips, left.id, left);
+        setOwn(clips, right.id, right);
         didSplit = true;
       }
 
@@ -354,7 +368,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         const remaining = rippleDelete(trackClips, clipId);
 
         delete clips[clipId];
-        for (const clip of remaining) clips[clip.id] = clip;
+        for (const clip of remaining) setOwn(clips, clip.id, clip);
         byTrack.set(target.trackId, remaining);
       }
 
@@ -497,7 +511,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       if (assets.length === 0) return state;
 
       const media = { ...state.project.entities.media };
-      for (const asset of assets) media[asset.id] = asset;
+      for (const asset of assets) setOwn(media, asset.id, asset);
 
       return commit(
         state,

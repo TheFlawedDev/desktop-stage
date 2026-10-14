@@ -8,11 +8,13 @@ import {
   ARCHIVE_MANIFEST_NAME,
   ARCHIVE_PROJECT_NAME,
   ArchiveError,
+  DEFAULT_ARCHIVE_LIMITS,
   archiveAssetPath,
   archiveFileName,
   exportProjectArchive,
   importProjectArchive,
   type ArchiveBlobStore,
+  type ArchiveLimits,
 } from "../archive";
 
 /** Minimal in-memory stand-in for the IndexedDB media store. */
@@ -602,5 +604,197 @@ describe("importProjectArchive", () => {
     expect(error.code).toBe("storage-failure");
     // The first blob was written, then rolled back together with the failure.
     expect(destination.blobs.size).toBe(0);
+  });
+
+  it("keeps a media asset whose id is __proto__ instead of remapping it away", async () => {
+    // `JSON.parse('{"__proto__": …}')` makes an own key, and the validator
+    // preserves it. The import remap is the next writer: a plain
+    // `remapped[id] = asset` would make the asset the map's prototype, so the
+    // media list comes back empty and `JSON.stringify` drops the asset.
+    const project = projectWithMedia("__proto__");
+    const exported = await exportProjectArchive(project, { store: seededStore("__proto__") });
+
+    expect(exported.manifest.assets[0]?.mediaId).toBe("__proto__");
+    expect(exported.manifest.assets[0]?.archivePath).toBe(archiveAssetPath("__proto__"));
+
+    const destination = new MemoryBlobStore();
+    const result = await importProjectArchive(exported.blob, {
+      store: destination,
+      keyFor: (_mediaId, index) => `staged-${index}`,
+    });
+
+    expect(result.stagedMedia).toEqual([{ mediaId: "__proto__", key: "staged-0" }]);
+    const media = result.project.entities.media;
+    expect(Object.getPrototypeOf(media)).toBe(Object.prototype);
+    expect(Object.keys(media)).toEqual(["__proto__"]);
+    expect(Object.hasOwn(media, "__proto__")).toBe(true);
+    expect(media["__proto__"]?.source).toEqual({ type: "indexeddb", key: "staged-0" });
+    // The bad write is invisible in the live object but lossy on save.
+    expect(JSON.parse(JSON.stringify(media))["__proto__"]).toBeDefined();
+    expect(await destination.blobs.get("staged-0")!.text()).toBe("bytes:__proto__");
+  });
+
+  it("rejects a manifest path that names a different asset", async () => {
+    // The manifest points m1 at m2's entry, and only that entry exists. The
+    // importer used to fall back to the canonical path silently; here the bytes
+    // really do belong to another asset, so the id binding has to reject it.
+    const archive = await zipWith({
+      [ARCHIVE_MANIFEST_NAME]: manifestJson([
+        {
+          mediaId: "m1",
+          name: "m1.png",
+          mimeType: "image/png",
+          archivePath: archiveAssetPath("m2"),
+          bundled: true,
+          byteSize: 8,
+        },
+      ]),
+      [ARCHIVE_PROJECT_NAME]: JSON.stringify(projectWithMedia("m1")),
+      [archiveAssetPath("m2")]: "bytes:m2",
+    });
+    const store = new MemoryBlobStore();
+
+    const error = await archiveError(() =>
+      importProjectArchive(archive, { store, keyFor: (_mediaId, index) => `staged-${index}` }),
+    );
+
+    expect(error.code).toBe("invalid-archive");
+    expect(error.details.join(" ")).toMatch(/not the entry for its own id/);
+    expect(store.blobs.size).toBe(0);
+  });
+
+  it("rejects a manifest path whose entry is missing even when its id matches", async () => {
+    const archive = await zipWith({
+      [ARCHIVE_MANIFEST_NAME]: manifestJson([
+        {
+          mediaId: "m1",
+          name: "m1.png",
+          mimeType: "image/png",
+          archivePath: archiveAssetPath("m1"),
+          bundled: true,
+          byteSize: 8,
+        },
+      ]),
+      [ARCHIVE_PROJECT_NAME]: JSON.stringify(projectWithMedia("m1")),
+    });
+    const store = new MemoryBlobStore();
+
+    const error = await archiveError(() =>
+      importProjectArchive(archive, { store, keyFor: (_mediaId, index) => `staged-${index}` }),
+    );
+
+    expect(error.code).toBe("invalid-archive");
+    expect(error.details[0]).toMatch(/that entry is missing/);
+    expect(store.blobs.size).toBe(0);
+  });
+
+  it("imports an archive written before media ids were percent-encoded", async () => {
+    // The old exporter left "." alone, so a dot in an id was written as a
+    // literal dot. Those archives must keep importing: the manifest is
+    // authoritative, and the path it names is still the entry that exists.
+    const archive = await zipWith({
+      [ARCHIVE_MANIFEST_NAME]: manifestJson([
+        {
+          mediaId: "a.b",
+          name: "a.b.png",
+          mimeType: "image/png",
+          archivePath: "assets/a.b",
+          bundled: true,
+          byteSize: 9,
+        },
+      ]),
+      [ARCHIVE_PROJECT_NAME]: JSON.stringify(projectWithMedia("a.b")),
+      "assets/a.b": "bytes:a.b",
+    });
+    const store = new MemoryBlobStore();
+
+    const result = await importProjectArchive(archive, {
+      store,
+      keyFor: (_mediaId, index) => `staged-${index}`,
+    });
+
+    expect(result.stagedMedia).toEqual([{ mediaId: "a.b", key: "staged-0" }]);
+    expect(result.project.entities.media["a.b"]?.source).toEqual({
+      type: "indexeddb",
+      key: "staged-0",
+    });
+    expect(await store.blobs.get("staged-0")!.text()).toBe("bytes:a.b");
+  });
+
+  it("keeps the defaults inside what a browser tab can hold", () => {
+    expect(DEFAULT_ARCHIVE_LIMITS.maxAssetBytes).toBe(512 * 1024 * 1024);
+    expect(DEFAULT_ARCHIVE_LIMITS.maxTotalBytes).toBe(2 * 1024 * 1024 * 1024);
+    expect(DEFAULT_ARCHIVE_LIMITS.maxTotalBytes).toBeGreaterThan(
+      DEFAULT_ARCHIVE_LIMITS.maxAssetBytes,
+    );
+  });
+
+  it("accepts an asset exactly at the per-asset bound and refuses one byte more", async () => {
+    const atLimit = await archiveWithAssets(
+      [{ mediaId: "m1", bytes: new Blob([new Uint8Array(16)]), level: 0 }],
+      projectWithMedia("m1"),
+    );
+    const store = new MemoryBlobStore();
+    const limits: Partial<ArchiveLimits> = { maxAssetBytes: 16, maxCompressionRatio: 1_000_000 };
+
+    const result = await importProjectArchive(atLimit, {
+      store,
+      limits,
+      keyFor: (_mediaId, index) => `staged-${index}`,
+    });
+    expect(result.stagedMedia).toEqual([{ mediaId: "m1", key: "staged-0" }]);
+
+    const overLimit = await archiveWithAssets(
+      [{ mediaId: "m1", bytes: new Blob([new Uint8Array(17)]), level: 0 }],
+      projectWithMedia("m1"),
+    );
+    const overStore = new MemoryBlobStore();
+    const error = await archiveError(() =>
+      importProjectArchive(overLimit, { store: overStore, limits }),
+    );
+
+    expect(error.code).toBe("invalid-archive");
+    expect(error.details.join(" ")).toMatch(/per-asset limit/);
+    expect(overStore.blobs.size).toBe(0);
+  });
+
+  it("accepts a set exactly at the aggregate bound and refuses one byte more", async () => {
+    const bytes = () => new Blob([new Uint8Array(8)]);
+    const atLimit = await archiveWithAssets(
+      [
+        { mediaId: "m1", bytes: bytes(), level: 0 },
+        { mediaId: "m2", bytes: bytes(), level: 0 },
+      ],
+      projectWithMedia("m1", "m2"),
+    );
+    const store = new MemoryBlobStore();
+    const limits: Partial<ArchiveLimits> = {
+      maxAssetBytes: 16,
+      maxTotalBytes: 16,
+      maxCompressionRatio: 1_000_000,
+    };
+
+    const result = await importProjectArchive(atLimit, {
+      store,
+      limits,
+      keyFor: (_mediaId, index) => `staged-${index}`,
+    });
+    expect(result.stagedMedia).toHaveLength(2);
+
+    const overLimit = await archiveWithAssets(
+      [
+        { mediaId: "m1", bytes: new Blob([new Uint8Array(9)]), level: 0 },
+        { mediaId: "m2", bytes: new Blob([new Uint8Array(9)]), level: 0 },
+      ],
+      projectWithMedia("m1", "m2"),
+    );
+    const overStore = new MemoryBlobStore();
+    const error = await archiveError(() =>
+      importProjectArchive(overLimit, { store: overStore, limits }),
+    );
+
+    expect(error.code).toBe("invalid-archive");
+    expect(error.details.join(" ")).toMatch(/in total/);
+    expect(overStore.blobs.size).toBe(0);
   });
 });

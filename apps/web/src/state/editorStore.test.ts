@@ -1,14 +1,18 @@
 /**
- * Tests for the media-removal edit.
+ * Tests for document ids that collide with `Object.prototype` members.
  *
- * Removing an asset is an ordinary undoable document edit. It must stay one:
- * the bytes are kept (see `useMediaImport.removeAsset`), so undo restores an
- * asset that still resolves — the document and the store stay consistent.
+ * A project file is JSON, and `JSON.parse('{"__proto__": …}')` produces an
+ * *own* `"__proto__"` key that `Object.keys`/`JSON.stringify` both see. The
+ * validator deliberately keeps such ids, so every store action that writes a
+ * clip or asset back into its map has to write an own property: a plain
+ * `clips[id] = clip` assignment invokes the `Object.prototype` setter, and the
+ * result of the edit disappears from the timeline.
  */
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { createStarterProject } from "@desktop-stage/desktop-engine";
-import type { MediaAsset } from "@cutaway/types";
+import type { Clip, MediaAsset, ProjectDocument } from "@cutaway/types";
+import { createClip, createProject, createTrack } from "@cutaway/utils";
 import { useEditorStore } from "./editorStore";
 
 const asset: MediaAsset = {
@@ -32,6 +36,114 @@ const asset: MediaAsset = {
   waveformKey: null,
   importedAt: 0,
 };
+
+/**
+ * A project with the given clips on one video track.
+ *
+ * `Object.fromEntries` would be the obvious build, but a plain assignment of
+ * the `"__proto__"` key makes it the map's prototype — which is the very defect
+ * these tests are about, so the fixture has to get it right too.
+ */
+function projectWithClips(trackId: string, ...clips: Clip[]): ProjectDocument {
+  const clipsById: Record<string, Clip> = {};
+  for (const clip of clips) {
+    Object.defineProperty(clipsById, clip.id, {
+      value: clip,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+
+  const base = createProject("Proto test");
+
+  return {
+    ...base,
+    entities: {
+      ...base.entities,
+      tracks: { [trackId]: createTrack({ id: trackId, kind: "video", index: 0 }) },
+      clips: clipsById,
+    },
+    trackOrder: [trackId],
+    durationFrames: 60,
+  };
+}
+
+function videoClip(id: string, trackId: string, startFrame: number, durationFrames: number): Clip {
+  return createClip({
+    id,
+    trackId,
+    startFrame,
+    durationFrames,
+    content: {
+      kind: "video",
+      mediaId: asset.id,
+      sourceInFrame: 0,
+      speed: 1,
+      volume: { type: "static", value: 1 },
+      muted: false,
+    },
+  });
+}
+
+describe("clips keyed __proto__", () => {
+  beforeEach(() => {
+    useEditorStore.getState().replaceProject(createStarterProject());
+  });
+
+  it("splits a clip whose id is __proto__ without losing a half", () => {
+    useEditorStore.getState().replaceProject(projectWithClips("track-1", videoClip("__proto__", "track-1", 0, 30)));
+    useEditorStore.setState({ playhead: 10 });
+
+    useEditorStore.getState().splitAtPlayhead();
+
+    const { clips } = useEditorStore.getState().project.entities;
+    expect(Object.getPrototypeOf(clips)).toBe(Object.prototype);
+    expect(Object.hasOwn(clips, "__proto__")).toBe(true);
+    expect(Object.keys(clips)).toHaveLength(2);
+
+    const left = clips["__proto__"];
+    expect(left?.id).toBe("__proto__");
+    expect(left?.startFrame).toBe(0);
+    expect(left?.durationFrames).toBe(10);
+    // The result has to survive serialization, which is what a lost own key
+    // cannot do.
+    expect(JSON.parse(JSON.stringify(clips))["__proto__"]).toBeDefined();
+  });
+
+  it("ripples past a clip whose id is __proto__ without losing the survivor", () => {
+    useEditorStore
+      .getState()
+      .replaceProject(
+        projectWithClips(
+          "track-1",
+          videoClip("__proto__", "track-1", 0, 10),
+          videoClip("clip-2", "track-1", 10, 10),
+        ),
+      );
+    useEditorStore.setState({ selectedClipIds: ["clip-2"] });
+
+    useEditorStore.getState().deleteSelected();
+
+    const { clips } = useEditorStore.getState().project.entities;
+    expect(Object.getPrototypeOf(clips)).toBe(Object.prototype);
+    expect(Object.hasOwn(clips, "clip-2")).toBe(true);
+    expect(Object.keys(clips)).toEqual(["clip-2"]);
+    // The rewrite is what closes the gap, so a lost own key would also lose the
+    // ripple.
+    expect(clips["clip-2"]!.startFrame).toBe(0);
+  });
+
+  it("imports an asset whose id is __proto__ as an own key", () => {
+    useEditorStore.getState().addMediaAssets([{ ...asset, id: "__proto__" }]);
+
+    const { media } = useEditorStore.getState().project.entities;
+    expect(Object.getPrototypeOf(media)).toBe(Object.prototype);
+    expect(Object.hasOwn(media, "__proto__")).toBe(true);
+    expect(Object.keys(media)).toEqual(["__proto__"]);
+    expect(media["__proto__"]!.source).toEqual({ type: "indexeddb", key: "blob-1" });
+  });
+});
 
 describe("removeMediaAsset", () => {
   beforeEach(() => {

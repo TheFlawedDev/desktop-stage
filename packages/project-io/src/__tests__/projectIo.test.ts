@@ -10,7 +10,7 @@ import {
 } from "../serialize";
 import { validateProject } from "../validate";
 import { migrateDocument } from "../migrate";
-import type { Mask, MediaAsset, ProjectDocument, TextContent } from "@cutaway/types";
+import type { Mask, MediaAsset, ProjectDocument, TextContent, Vec2 } from "@cutaway/types";
 
 function imageAsset(id: string): MediaAsset {
   return {
@@ -168,14 +168,144 @@ describe("round trip", () => {
       closed: true,
     });
     expect(mask.motionPath).toEqual({
-      points: [{ x: 0, y: 0 }],
-      handles: [],
+      // The unreadable point is reset in place rather than removed, so the
+      // handle list still lines up with it one-for-one.
+      points: [
+        { x: 0, y: 0 },
+        { x: 0, y: 0 },
+      ],
+      handles: [
+        { in: { x: 0, y: 0 }, out: { x: 0, y: 0 } },
+        { in: { x: 0, y: 0 }, out: { x: 0, y: 0 } },
+      ],
       closed: false,
       orientToPath: false,
       progress: { type: "static", value: 1 },
     });
+    expect(mask.motionPath!.points).toHaveLength(mask.motionPath!.handles.length);
     expect(issues.some((i) => /unreadable handle/i.test(i.message))).toBe(true);
+    expect(issues.some((i) => /unreadable point/i.test(i.message))).toBe(true);
     expect(issues.some((i) => /motion path progress/i.test(i.message))).toBe(true);
+  });
+
+  it("keeps each motion-path handle attached to the point it was authored for", () => {
+    // The old repair filtered invalid points out of `points` while keeping every
+    // handle, so dropping `points[1]` silently promoted the handle authored for
+    // it to point 2 — a repair that corrupts the very data it meant to save.
+    const project = populatedProject();
+    const clipId = Object.keys(project.entities.clips)[0]!;
+    const clip = project.entities.clips[clipId]!;
+
+    const handles = [
+      { in: { x: -1, y: 0 }, out: { x: 1, y: 0 } },
+      { in: { x: -2, y: 0 }, out: { x: 2, y: 0 } },
+      { in: { x: -3, y: 0 }, out: { x: 3, y: 0 } },
+    ];
+
+    const { project: repaired, issues } = validateProject({
+      ...project,
+      entities: {
+        ...project.entities,
+        clips: {
+          [clipId]: {
+            ...clip,
+            masks: [
+              {
+                id: "mask-1",
+                shape: {
+                  kind: "path",
+                  vertices: [
+                    { type: "static", value: { x: 0, y: 0 } },
+                    { type: "static", value: { x: 1, y: 0 } },
+                    { type: "static", value: { x: 2, y: 0 } },
+                  ],
+                  handles,
+                  closed: true,
+                },
+                motionPath: {
+                  points: [{ x: 0, y: 0 }, "not-a-point", { x: 20, y: 0 }],
+                  handles,
+                  progress: { type: "static", value: 1 },
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    const mask = repaired.entities.clips[clipId]!.masks[0]!;
+    // The unreadable point is reset, but every handle stays where it was
+    // authored: order is preserved, so handle 2 still belongs to point 2.
+    expect(mask.motionPath!.points).toEqual([
+      { x: 0, y: 0 },
+      { x: 0, y: 0 },
+      { x: 20, y: 0 },
+    ]);
+    expect(mask.motionPath!.handles).toEqual(handles);
+    expect(mask.motionPath!.handles).toHaveLength(mask.motionPath!.points.length);
+
+    // The shape's vertices are repaired in place too, so the same holds there.
+    expect(mask.shape).toMatchObject({ kind: "path", handles });
+    expect(issues.some((i) => i.severity === "repaired" && /unreadable point/i.test(i.message))).toBe(
+      true,
+    );
+  });
+
+  it("repairs a handle/point count mismatch instead of trusting the file", () => {
+    const project = populatedProject();
+    const clipId = Object.keys(project.entities.clips)[0]!;
+    const clip = project.entities.clips[clipId]!;
+
+    const handles = [
+      { in: { x: -1, y: 0 }, out: { x: 1, y: 0 } },
+      { in: { x: -2, y: 0 }, out: { x: 2, y: 0 } },
+    ];
+
+    const { project: repaired, issues } = validateProject({
+      ...project,
+      entities: {
+        ...project.entities,
+        clips: {
+          [clipId]: {
+            ...clip,
+            masks: [
+              {
+                id: "mask-1",
+                shape: {
+                  kind: "path",
+                  // Three vertices, one handle: any reader indexing handles[i]
+                  // used to get `undefined` for the last two.
+                  vertices: [
+                    { type: "static", value: { x: 0, y: 0 } },
+                    { type: "static", value: { x: 1, y: 0 } },
+                    { type: "static", value: { x: 2, y: 0 } },
+                  ],
+                  handles: handles.slice(0, 1),
+                  closed: true,
+                },
+                motionPath: {
+                  points: [{ x: 0, y: 0 }],
+                  // One point, two handles: the trailing authored handle has to
+                  // be dropped, and that loss must be reported.
+                  handles,
+                  progress: { type: "static", value: 1 },
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    const mask = repaired.entities.clips[clipId]!.masks[0]!;
+    const shape = mask.shape as { handles: { in: Vec2; out: Vec2 }[] };
+    expect(shape.handles).toEqual([handles[0], { in: { x: 0, y: 0 }, out: { x: 0, y: 0 } }]);
+    expect(mask.motionPath!.handles).toEqual([handles[0]]);
+    expect(mask.motionPath!.points).toHaveLength(1);
+
+    expect(issues.some((i) => /padded to match/i.test(i.message))).toBe(true);
+    expect(issues.some((i) => /truncated to match/i.test(i.message))).toBe(true);
   });
 
   it("writes a self-identifying, human-readable file", () => {
@@ -790,6 +920,54 @@ describe("parseProjectFile malformed documents", () => {
     expect(result.project.entities.media.m1!.metadata.byteSize).toBe(0);
     expect(result.project.entities.captionTracks).toEqual({});
   });
+
+  it("keeps a media asset keyed __proto__ through load, save, and reload", () => {
+    // `JSON.parse` produces an *own* `"__proto__"` key, so both the validator's
+    // media map and every later writer need `Object.defineProperty`; a plain
+    // assignment would make the asset the map's prototype and silently drop it
+    // on the next save.
+    const raw = JSON.stringify({
+      magic: PROJECT_FILE_MAGIC,
+      schemaVersion: SCHEMA_VERSION,
+      settings: { name: "Proto", resolution: { width: 640, height: 360 }, frameRate: 30 },
+      entities: {
+        tracks: {},
+        clips: {},
+        media: {
+          __proto__: {
+            id: "__proto__",
+            name: "evil.png",
+            kind: "image",
+            mimeType: "image/png",
+            source: { type: "indexeddb", key: "proto:source" },
+          },
+        },
+        markers: {},
+        captionTracks: {},
+      },
+      trackOrder: [],
+    });
+
+    const result = parseProjectFile(raw);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const media = result.project.entities.media;
+    expect(Object.getPrototypeOf(media)).toBe(Object.prototype);
+    expect(Object.hasOwn(media, "__proto__")).toBe(true);
+    expect(Object.keys(media)).toEqual(["__proto__"]);
+    expect(media["__proto__"]!.source).toEqual({ type: "indexeddb", key: "proto:source" });
+    expect(referencedBlobKeys(result.project).has("proto:source")).toBe(true);
+
+    const reloaded = parseProjectFile(serializeProject(result.project));
+    expect(reloaded.ok).toBe(true);
+    if (!reloaded.ok) return;
+    expect(Object.hasOwn(reloaded.project.entities.media, "__proto__")).toBe(true);
+    expect(reloaded.project.entities.media["__proto__"]!.name).toBe("evil.png");
+
+    // Nothing reached the global prototype.
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
 });
 
 describe("migrateDocument", () => {
@@ -806,6 +984,39 @@ describe("migrateDocument", () => {
     const result = migrateDocument({ schemaVersion: SCHEMA_VERSION, name: "x" });
     expect(result.applied).toEqual([]);
     expect(result.document.name).toBe("x");
+  });
+
+  it("keeps a v0 clip keyed __proto__ and stamps its Desktop Stage version", () => {
+    // `stampDesktopContentVersions` rebuilds the clips map. With a plain
+    // assignment, a `"__proto__"` key became the map's prototype: the clip
+    // vanished from `Object.keys` and the rewritten project lost it outright.
+    const parsed = JSON.parse(
+      `{
+        "entities": {
+          "clips": {
+            "__proto__": {
+              "id": "__proto__",
+              "trackId": "t1",
+              "startFrame": 0,
+              "durationFrames": 30,
+              "content": { "kind": "plugin", "contentType": "desktop-stage/app", "data": {} }
+            }
+          }
+        }
+      }`,
+    ) as Record<string, unknown>;
+
+    const result = migrateDocument(parsed);
+    expect(result.applied).toHaveLength(1);
+
+    const entities = result.document.entities as { clips: Record<string, unknown> };
+    const clips = entities.clips;
+    expect(Object.getPrototypeOf(clips)).toBe(Object.prototype);
+    expect(Object.hasOwn(clips, "__proto__")).toBe(true);
+    expect(Object.keys(clips)).toEqual(["__proto__"]);
+
+    const clip = clips["__proto__"] as { content: { contentType: string } };
+    expect(clip.content.contentType).toBe("desktop-stage/app@1");
   });
 });
 
