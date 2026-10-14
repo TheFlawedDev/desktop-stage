@@ -97,11 +97,76 @@ function seededStore(...ids: string[]): MemoryBlobStore {
   return store;
 }
 
+/** A project whose only clip is a Desktop Stage plugin payload. */
+function projectWithDesktopClip(
+  contentType: string,
+  data: Record<string, unknown>,
+): ProjectDocument {
+  const base = createProject("Archive test");
+  const track = createTrack({ kind: "desktop", index: 0 });
+  const clip = createClip({
+    id: "clip-desktop",
+    trackId: track.id,
+    startFrame: 0,
+    durationFrames: 30,
+    content: { kind: "plugin", contentType, data },
+  });
+
+  return {
+    ...base,
+    entities: { ...base.entities, tracks: { [track.id]: track }, media: {}, clips: { [clip.id]: clip } },
+    trackOrder: [track.id],
+    durationFrames: 30,
+  };
+}
+
 async function zipWith(entries: Record<string, string>): Promise<Blob> {
   const writer = new ZipWriter<Blob>(new BlobWriter("application/zip"));
   for (const [name, text] of Object.entries(entries)) {
     await writer.add(name, new TextReader(text));
   }
+  return writer.close();
+}
+
+/**
+ * Builds an archive whose manifest and asset entries are written by hand, so a
+ * test can lie about a size or choose a compression method.
+ *
+ * `level` is passed straight through to zip.js: 0 stores the bytes, leaving it
+ * unset compresses them.
+ */
+async function archiveWithAssets(
+  assets: { mediaId: string; bytes: Blob; byteSize?: number; level?: number }[],
+  project: ProjectDocument,
+): Promise<Blob> {
+  const writer = new ZipWriter<Blob>(new BlobWriter("application/zip"));
+
+  await writer.add(
+    ARCHIVE_MANIFEST_NAME,
+    new TextReader(
+      manifestJson(
+        assets.map((asset) => ({
+          mediaId: asset.mediaId,
+          name: `${asset.mediaId}.png`,
+          mimeType: "image/png",
+          archivePath: archiveAssetPath(asset.mediaId),
+          bundled: true,
+          byteSize: asset.byteSize ?? asset.bytes.size,
+        })),
+      ),
+    ),
+  );
+  await writer.add(ARCHIVE_PROJECT_NAME, new TextReader(JSON.stringify(project)));
+
+  for (const asset of assets) {
+    const path = archiveAssetPath(asset.mediaId);
+    if (asset.level === undefined) {
+      await writer.add(path, new BlobReader(asset.bytes));
+    } else {
+      await writer.add(path, new BlobReader(asset.bytes), { level: asset.level });
+    }
+  }
+
   return writer.close();
 }
 
@@ -173,6 +238,23 @@ describe("exportProjectArchive", () => {
   });
 });
 
+describe("archiveAssetPath", () => {
+  it("keeps ordinary ids readable and escapes anything that could escape the root", () => {
+    expect(archiveAssetPath("m1")).toBe("assets/m1");
+    expect(archiveAssetPath("a b")).toBe("assets/a%20b");
+    expect(archiveAssetPath("a/b")).toBe("assets/a%2Fb");
+    expect(archiveAssetPath("..")).toBe("assets/%2E%2E");
+    expect(archiveAssetPath(".")).toBe("assets/%2E");
+    expect(archiveAssetPath("")).toBe("assets/#");
+    expect(archiveAssetPath("\uD800")).toBe("assets/#D800");
+  });
+
+  it("gives every unusual id its own path, so two assets cannot share an entry", () => {
+    const paths = ["..", ".", "", "\uD800", "\uD801", "#", "a.b", "a%2Eb"].map(archiveAssetPath);
+    expect(new Set(paths).size).toBe(paths.length);
+  });
+});
+
 describe("importProjectArchive", () => {
   it("round-trips a media-rich project and remaps its media keys", async () => {
     const exported = await exportProjectArchive(projectWithMedia("m1"), { store: seededStore("m1") });
@@ -190,6 +272,230 @@ describe("importProjectArchive", () => {
     const staged = destination.blobs.get("staged-0");
     expect(staged).toBeDefined();
     expect(await staged!.text()).toBe("bytes:m1");
+  });
+
+  it("round-trips several assets without tripping the size bounds", async () => {
+    const exported = await exportProjectArchive(projectWithMedia("m1", "m2", "m3"), {
+      store: seededStore("m1", "m2", "m3"),
+    });
+
+    const destination = new MemoryBlobStore();
+    const result = await importProjectArchive(exported.blob, {
+      store: destination,
+      keyFor: (_mediaId, index) => `staged-${index}`,
+    });
+
+    expect(result.stagedMedia).toHaveLength(3);
+    expect(result.issues).toEqual([]);
+    expect(destination.blobs.size).toBe(3);
+  });
+
+  it("round-trips a media id that is unsafe as a raw path segment", async () => {
+    const exported = await exportProjectArchive(projectWithMedia(".."), { store: seededStore("..") });
+
+    expect(exported.manifest.assets[0]?.archivePath).toBe(archiveAssetPath(".."));
+    expect(exported.manifest.assets[0]?.archivePath).not.toBe("assets/..");
+
+    const destination = new MemoryBlobStore();
+    const result = await importProjectArchive(exported.blob, {
+      store: destination,
+      keyFor: (_mediaId, index) => `staged-${index}`,
+    });
+
+    expect(result.stagedMedia).toEqual([{ mediaId: "..", key: "staged-0" }]);
+    expect(await destination.blobs.get("staged-0")!.text()).toBe("bytes:..");
+  });
+
+  it("reports the first-pass issues, including a dropped unsupported Desktop Stage clip", async () => {
+    const archive = await zipWith({
+      [ARCHIVE_MANIFEST_NAME]: manifestJson([]),
+      [ARCHIVE_PROJECT_NAME]: JSON.stringify(projectWithDesktopClip("desktop-stage/app@2", {})),
+    });
+    const store = new MemoryBlobStore();
+
+    const result = await importProjectArchive(archive, { store });
+
+    expect(result.project.entities.clips["clip-desktop"]).toBeUndefined();
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        severity: "dropped",
+        subject: "clip:clip-desktop",
+        message: expect.stringMatching(/version 2 is not supported/),
+      }),
+    ]);
+    expect(store.blobs.size).toBe(0);
+  });
+
+  it("rejects an asset entry that is null instead of throwing a TypeError", async () => {
+    const archive = await zipWith({
+      [ARCHIVE_MANIFEST_NAME]: manifestJson([null]),
+      [ARCHIVE_PROJECT_NAME]: JSON.stringify(projectWithMedia("m1")),
+    });
+    const store = new MemoryBlobStore();
+
+    const error = await archiveError(() => importProjectArchive(archive, { store }));
+
+    expect(error.code).toBe("invalid-archive");
+    expect(error.message).toMatch(/assets\[0\]/);
+    expect(store.blobs.size).toBe(0);
+  });
+
+  it("rejects an asset entry with no media id", async () => {
+    const archive = await zipWith({
+      [ARCHIVE_MANIFEST_NAME]: manifestJson([
+        { bundled: true, archivePath: "assets/m1", byteSize: 8 },
+      ]),
+      [ARCHIVE_PROJECT_NAME]: JSON.stringify(projectWithMedia("m1")),
+    });
+    const store = new MemoryBlobStore();
+
+    const error = await archiveError(() => importProjectArchive(archive, { store }));
+
+    expect(error.code).toBe("invalid-archive");
+    expect(error.message).toMatch(/media id/);
+  });
+
+  it("rejects a bundled asset whose manifest path leaves the assets directory", async () => {
+    const archive = await zipWith({
+      [ARCHIVE_MANIFEST_NAME]: manifestJson([
+        {
+          mediaId: "m1",
+          name: "m1.png",
+          mimeType: "image/png",
+          archivePath: "../m1",
+          bundled: true,
+          byteSize: 8,
+        },
+      ]),
+      [ARCHIVE_PROJECT_NAME]: JSON.stringify(projectWithMedia("m1")),
+    });
+    const store = new MemoryBlobStore();
+
+    const error = await archiveError(() => importProjectArchive(archive, { store }));
+
+    expect(error.code).toBe("invalid-archive");
+    expect(error.message).toMatch(/outside the assets directory/);
+  });
+
+  it("rejects an asset entry with no readable byte size", async () => {
+    const archive = await zipWith({
+      [ARCHIVE_MANIFEST_NAME]: manifestJson([
+        {
+          mediaId: "m1",
+          name: "m1.png",
+          mimeType: "image/png",
+          archivePath: "assets/m1",
+          bundled: true,
+          byteSize: "8",
+        },
+      ]),
+      [ARCHIVE_PROJECT_NAME]: JSON.stringify(projectWithMedia("m1")),
+    });
+    const store = new MemoryBlobStore();
+
+    const error = await archiveError(() => importProjectArchive(archive, { store }));
+
+    expect(error.code).toBe("invalid-archive");
+    expect(error.message).toMatch(/byte size/);
+  });
+
+  it("refuses a manifest above the metadata bound before parsing it", async () => {
+    const archive = await zipWith({
+      [ARCHIVE_MANIFEST_NAME]: manifestJson([]),
+      [ARCHIVE_PROJECT_NAME]: JSON.stringify(projectWithMedia("m1")),
+    });
+    const store = new MemoryBlobStore();
+
+    const error = await archiveError(() =>
+      importProjectArchive(archive, { store, limits: { maxMetadataBytes: 16 } }),
+    );
+
+    expect(error.code).toBe("invalid-archive");
+    expect(error.message).toMatch(/metadata limit/);
+    expect(store.blobs.size).toBe(0);
+  });
+
+  it("rejects an asset that unpacks to far more than the manifest claims", async () => {
+    // A small compressed entry (about 1 KB stored) that inflates to 1 MiB, but
+    // whose manifest claims 8 bytes.
+    const archive = await archiveWithAssets(
+      [{ mediaId: "m1", bytes: new Blob(["A".repeat(1024 * 1024)]), byteSize: 8 }],
+      projectWithMedia("m1"),
+    );
+    const store = new MemoryBlobStore();
+
+    const error = await archiveError(() => importProjectArchive(archive, { store }));
+
+    expect(error.code).toBe("invalid-archive");
+    expect(error.details.join(" ")).toMatch(/listed as 8 bytes but declares 1048576/);
+    expect(store.blobs.size).toBe(0);
+  });
+
+  it("refuses an asset above the per-asset bound without unpacking it", async () => {
+    const bytes = new Blob([new Uint8Array(2 * 1024 * 1024)]);
+    const archive = await archiveWithAssets([{ mediaId: "m1", bytes, level: 0 }], projectWithMedia("m1"));
+    const store = new MemoryBlobStore();
+
+    const error = await archiveError(() =>
+      importProjectArchive(archive, {
+        store,
+        limits: {
+          maxAssetBytes: 1024 * 1024,
+          maxTotalBytes: 100 * 1024 * 1024,
+          maxCompressionRatio: 1_000_000,
+        },
+      }),
+    );
+
+    expect(error.code).toBe("invalid-archive");
+    expect(error.details.join(" ")).toMatch(/per-asset limit/);
+    expect(store.blobs.size).toBe(0);
+  });
+
+  it("refuses a set of assets above the aggregate bound", async () => {
+    const bytes = () => new Blob([new Uint8Array(2 * 1024 * 1024)]);
+    const archive = await archiveWithAssets(
+      [
+        { mediaId: "m1", bytes: bytes(), level: 0 },
+        { mediaId: "m2", bytes: bytes(), level: 0 },
+      ],
+      projectWithMedia("m1", "m2"),
+    );
+    const store = new MemoryBlobStore();
+
+    const error = await archiveError(() =>
+      importProjectArchive(archive, {
+        store,
+        limits: {
+          maxAssetBytes: 100 * 1024 * 1024,
+          maxTotalBytes: 3 * 1024 * 1024,
+          maxCompressionRatio: 1_000_000,
+        },
+      }),
+    );
+
+    expect(error.code).toBe("invalid-archive");
+    expect(error.details.join(" ")).toMatch(/in total/);
+    expect(store.blobs.size).toBe(0);
+  });
+
+  it("refuses a highly compressed large entry as a decompression bomb", async () => {
+    const archive = await archiveWithAssets(
+      [{ mediaId: "m1", bytes: new Blob(["A".repeat(2 * 1024 * 1024)]) }],
+      projectWithMedia("m1"),
+    );
+    const store = new MemoryBlobStore();
+
+    const error = await archiveError(() =>
+      importProjectArchive(archive, {
+        store,
+        limits: { maxAssetBytes: 1024 * 1024 * 1024, maxTotalBytes: 1024 * 1024 * 1024, maxCompressionRatio: 50 },
+      }),
+    );
+
+    expect(error.code).toBe("invalid-archive");
+    expect(error.details.join(" ")).toMatch(/:1 limit/);
+    expect(store.blobs.size).toBe(0);
   });
 
   it("rejects an entry that is not part of the format, staging nothing", async () => {

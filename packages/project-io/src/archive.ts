@@ -121,6 +121,50 @@ export interface ArchiveExportResult {
   manifest: ArchiveManifest;
 }
 
+/**
+ * Practical ceilings on what a single archive may unpack.
+ *
+ * An archive is attacker-controlled input, and a small file can describe a
+ * very large one. These bound one asset and the whole set. The defaults are
+ * generous enough for ordinary media-rich projects — a single 4 GB source clip
+ * is unusual, and a project bundling more than 16 GB is beyond what a browser
+ * blob store holds — while staying far below what a decompression bomb asks
+ * for. Every number is read from the ZIP central directory, so enforcing them
+ * never inflates a byte.
+ */
+export interface ArchiveLimits {
+  /** Largest single asset, after decompression, in bytes. Default 4 GiB. */
+  maxAssetBytes: number;
+  /** Largest total of every bundled asset, after decompression. Default 16 GiB. */
+  maxTotalBytes: number;
+  /** Largest uncompressed:compressed ratio tolerated. Default 200:1. */
+  maxCompressionRatio: number;
+  /**
+   * Largest manifest.json or project.json, after decompression. Default 64 MiB.
+   *
+   * These are read before the asset gate, so they need a ceiling of their own:
+   * a project document with millions of clips is already unusable, and no
+   * legitimate one is 64 MiB of JSON.
+   */
+  maxMetadataBytes: number;
+}
+
+export const DEFAULT_ARCHIVE_LIMITS: ArchiveLimits = {
+  maxAssetBytes: 4 * 1024 * 1024 * 1024,
+  maxTotalBytes: 16 * 1024 * 1024 * 1024,
+  maxCompressionRatio: 200,
+  maxMetadataBytes: 64 * 1024 * 1024,
+};
+
+/**
+ * Ratio checks only apply at or above this size.
+ *
+ * Below it a few highly compressible bytes are just a small file — a short
+ * caption asset, a tiny one-colour image — and the ratio says nothing. A real
+ * bomb has to be large to threaten memory, so the floor costs no protection.
+ */
+export const ARCHIVE_COMPRESSION_RATIO_FLOOR_BYTES = 1024 * 1024;
+
 export interface ArchiveImportOptions {
   store: ArchiveBlobStore;
   /**
@@ -130,6 +174,8 @@ export interface ArchiveImportOptions {
    * deterministic one.
    */
   keyFor?: (mediaId: string, index: number) => string;
+  /** Overrides the resource bounds; tests use tiny values. */
+  limits?: Partial<ArchiveLimits>;
   onProgress?: (progress: ArchiveProgress) => void;
 }
 
@@ -166,9 +212,53 @@ export function archiveFileName(projectName: string): string {
   return `${safe || "untitled"}.${ARCHIVE_FILE_EXTENSION}`;
 }
 
+/**
+ * Encodes one media id as a single archive path segment that is always safe.
+ *
+ * `encodeURIComponent` is the base because it leaves ordinary ids — letters,
+ * digits, and the punctuation it treats as unreserved — unchanged, so most
+ * archives written by earlier builds keep exactly the paths they had; the few
+ * that contain a "." are still readable, because import trusts the path the
+ * manifest records. It is not sufficient on its own: it leaves "." and ".."
+ * untouched, so an id of ".." would name the parent of the assets directory.
+ * Dots are escaped instead. A lone surrogate is not encodable as UTF-8 at all
+ * (`encodeURIComponent` throws), and an empty id has nothing to encode, so both
+ * fall back to a UTF-16 hex form behind a "#" prefix. `encodeURIComponent`
+ * percent-encodes a literal "#", so the two forms can never collide: every
+ * fallback path is unique and none is a parent segment.
+ */
+function encodeMediaIdSegment(mediaId: string): string {
+  try {
+    const encoded = encodeURIComponent(mediaId).replace(/\./g, "%2E");
+    if (encoded.length > 0) return encoded;
+  } catch {
+    // A lone surrogate cannot be percent-encoded; use the hex form below.
+  }
+
+  let hex = "";
+  for (let index = 0; index < mediaId.length; index += 1) {
+    hex += mediaId.charCodeAt(index).toString(16).toUpperCase().padStart(4, "0");
+  }
+  return `#${hex}`;
+}
+
 /** Archive path for one media asset. Media ids are opaque, so they are encoded. */
 export function archiveAssetPath(mediaId: string): string {
-  return `${ARCHIVE_ASSET_DIRECTORY}/${encodeURIComponent(mediaId)}`;
+  return `${ARCHIVE_ASSET_DIRECTORY}/${encodeMediaIdSegment(mediaId)}`;
+}
+
+/** True when a manifest path names exactly one asset inside the assets directory. */
+function isArchiveAssetPath(path: string): boolean {
+  if (!path.startsWith(`${ARCHIVE_ASSET_DIRECTORY}/`)) return false;
+
+  const segment = path.slice(ARCHIVE_ASSET_DIRECTORY.length + 1);
+  return (
+    segment.length > 0 &&
+    segment !== "." &&
+    segment !== ".." &&
+    !segment.includes("/") &&
+    !segment.includes("\\")
+  );
 }
 
 /**
@@ -286,6 +376,71 @@ function validateEntryName(name: string): string | null {
   return `entry "${name}" is not part of a Desktop Stage archive`;
 }
 
+/**
+ * Validates every `manifest.assets` entry before any of it is used.
+ *
+ * The manifest is attacker-controlled JSON, so a null, string, or half-written
+ * entry must be reported as a broken archive — with the index that is wrong —
+ * rather than surfacing later as a `TypeError` from reading `.mediaId` of
+ * `null`. Descriptive fields are defaulted; everything the import relies on
+ * (identity, bundling, path, size) is required.
+ */
+function parseManifestAssets(raw: readonly unknown[]): ArchiveAssetEntry[] {
+  return raw.map((candidate, index) => {
+    const where = `manifest.json assets[${index}]`;
+
+    if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
+      throw new ArchiveError("invalid-archive", `${where} is not an object.`);
+    }
+
+    const item = candidate as Record<string, unknown>;
+
+    const mediaId = item.mediaId;
+    if (typeof mediaId !== "string" || mediaId.length === 0) {
+      throw new ArchiveError("invalid-archive", `${where} has no readable media id.`);
+    }
+
+    const bundled = item.bundled;
+    if (typeof bundled !== "boolean") {
+      throw new ArchiveError("invalid-archive", `${where} ("${mediaId}") has no bundled flag.`);
+    }
+
+    const archivePath = item.archivePath;
+    if (archivePath !== null && typeof archivePath !== "string") {
+      throw new ArchiveError(
+        "invalid-archive",
+        `${where} ("${mediaId}") has an unreadable archive path.`,
+      );
+    }
+    if (bundled && typeof archivePath !== "string") {
+      throw new ArchiveError(
+        "invalid-archive",
+        `${where} ("${mediaId}") is bundled but names no archive path.`,
+      );
+    }
+    if (typeof archivePath === "string" && !isArchiveAssetPath(archivePath)) {
+      throw new ArchiveError(
+        "invalid-archive",
+        `${where} ("${mediaId}") points outside the assets directory: "${archivePath}".`,
+      );
+    }
+
+    const byteSize = item.byteSize;
+    if (typeof byteSize !== "number" || !Number.isFinite(byteSize) || byteSize < 0) {
+      throw new ArchiveError("invalid-archive", `${where} ("${mediaId}") has no readable byte size.`);
+    }
+
+    return {
+      mediaId,
+      name: typeof item.name === "string" ? item.name : mediaId,
+      mimeType: typeof item.mimeType === "string" ? item.mimeType : "application/octet-stream",
+      archivePath: typeof archivePath === "string" ? archivePath : null,
+      bundled,
+      byteSize,
+    };
+  });
+}
+
 function parseManifest(text: string): ArchiveManifest {
   let parsed: unknown;
   try {
@@ -331,7 +486,7 @@ function parseManifest(text: string): ArchiveManifest {
     appVersion: typeof manifest.appVersion === "string" ? manifest.appVersion : "0.0.0",
     projectId: typeof manifest.projectId === "string" ? manifest.projectId : "",
     projectName: typeof manifest.projectName === "string" ? manifest.projectName : "",
-    assets: manifest.assets,
+    assets: parseManifestAssets(manifest.assets),
   };
 }
 
@@ -359,6 +514,131 @@ async function readArchiveEntries(reader: ZipReader<Blob>): Promise<Entry[]> {
   }
 }
 
+/** One media asset resolved to the ZIP entry that will be unpacked for it. */
+interface PlannedAssetRead {
+  asset: MediaAsset;
+  entry: FileEntry;
+  /** The manifest entry that listed this asset, already validated. */
+  listed: ArchiveAssetEntry;
+}
+
+function resolveLimits(overrides: Partial<ArchiveLimits> | undefined): ArchiveLimits {
+  return { ...DEFAULT_ARCHIVE_LIMITS, ...overrides };
+}
+
+/**
+ * Rejects manifest.json or project.json before it is inflated.
+ *
+ * Both are read before the asset gate below, so their own declared size has to
+ * be bounded too; otherwise a bomb could simply move into the project document.
+ */
+function assertMetadataEntryWithinBounds(entry: FileEntry, limits: ArchiveLimits): void {
+  const size = entry.uncompressedSize;
+  if (size > limits.maxMetadataBytes) {
+    throw new ArchiveError(
+      "invalid-archive",
+      `${entry.filename} unpacks to ${size} bytes, above the ${limits.maxMetadataBytes}-byte metadata limit.`,
+    );
+  }
+}
+
+/**
+ * Rejects an archive whose declared media is inconsistent or abusive, before a
+ * single asset is inflated.
+ *
+ * Every number comes from the ZIP central directory: the manifest's declared
+ * byte size and the entry's stored uncompressed/compressed sizes. That means a
+ * bomb is refused for what it *says* it will produce, with no decompression and
+ * without loading assets into memory just to measure them. Three checks run:
+ *
+ * - the manifest's `byteSize` must match the entry's declared uncompressed size,
+ *   so a harmless-looking small claim cannot hide a large payload;
+ * - a single entry and the set together must stay under the configured ceilings;
+ * - an entry may not be compressed beyond a practical ratio (above the floor
+ *   where a ratio is meaningful), which is what a bomb engineered to sit under
+ *   an absolute ceiling would look like.
+ *
+ * A header that under-reports its own output is caught too, because zip.js
+ * refuses to return more bytes than the entry declares.
+ */
+function assertArchiveAssetSizes(
+  plans: readonly PlannedAssetRead[],
+  limits: ArchiveLimits,
+): void {
+  const details: string[] = [];
+  let totalBytes = 0;
+
+  for (const plan of plans) {
+    const { entry } = plan;
+    const label = `${plan.asset.name} (${entry.filename})`;
+    const size = entry.uncompressedSize;
+
+    if (plan.listed.byteSize !== size) {
+      details.push(
+        `${label} is listed as ${plan.listed.byteSize} bytes but declares ${size} uncompressed bytes`,
+      );
+      continue;
+    }
+
+    if (size > limits.maxAssetBytes) {
+      details.push(
+        `${label} unpacks to ${size} bytes, above the ${limits.maxAssetBytes}-byte per-asset limit`,
+      );
+      continue;
+    }
+
+    const compressed = entry.compressedSize;
+    if (
+      size >= ARCHIVE_COMPRESSION_RATIO_FLOOR_BYTES &&
+      compressed > 0 &&
+      size / compressed > limits.maxCompressionRatio
+    ) {
+      details.push(
+        `${label} is compressed ${Math.round(size / compressed)}:1, above the ${limits.maxCompressionRatio}:1 limit`,
+      );
+      continue;
+    }
+
+    totalBytes += size;
+  }
+
+  if (totalBytes > limits.maxTotalBytes) {
+    details.push(
+      `the archive's media unpacks to ${totalBytes} bytes in total, above the ${limits.maxTotalBytes}-byte limit`,
+    );
+  }
+
+  if (details.length > 0) {
+    throw new ArchiveError("invalid-archive", "The archive's media failed its size checks.", details);
+  }
+}
+
+/**
+ * Combines the issues raised while reading the archived project with any raised
+ * while re-validating the remapped document, keeping the first of each.
+ *
+ * The first pass is the authoritative one for content the file could not carry:
+ * a Desktop Stage clip whose payload version this build does not know is dropped
+ * there. Re-validating a document that was already repaired rarely adds
+ * anything, so the first pass must not be discarded.
+ */
+function mergeIssues(
+  first: readonly ValidationIssue[],
+  second: readonly ValidationIssue[],
+): ValidationIssue[] {
+  const merged: ValidationIssue[] = [];
+  const seen = new Set<string>();
+
+  for (const issue of [...first, ...second]) {
+    const key = `${issue.severity}\u0000${issue.subject}\u0000${issue.message}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(issue);
+  }
+
+  return merged;
+}
+
 /**
  * Reads a `.desktopstage` archive and stages its media.
  *
@@ -377,6 +657,7 @@ export async function importProjectArchive(
   // permissive here is not a traversal risk.
   const reader = new ZipReader(new BlobReader(archive), { filenameValidation: "tolerant" });
   const staged: { mediaId: string; key: string }[] = [];
+  const limits = resolveLimits(options.limits);
 
   try {
     const entries = await readArchiveEntries(reader);
@@ -402,6 +683,7 @@ export async function importProjectArchive(
       throw new ArchiveError("invalid-archive", "The archive has no manifest.json.");
     }
 
+    assertMetadataEntryWithinBounds(manifestEntry, limits);
     const manifestText = await (
       await manifestEntry.getData(new BlobWriter("application/json"))
     ).text();
@@ -412,40 +694,38 @@ export async function importProjectArchive(
       throw new ArchiveError("invalid-archive", "The archive has no project.json.");
     }
 
+    assertMetadataEntryWithinBounds(projectEntry, limits);
     const projectText = await (await projectEntry.getData(new BlobWriter("application/json"))).text();
     const parsed = parseProjectFile(projectText);
     if (!parsed.ok) {
       throw new ArchiveError("invalid-project", `The archived project could not be read: ${parsed.error}`);
     }
 
-    const assetPaths = new Map(manifest.assets.map((asset) => [asset.mediaId, asset.archivePath]));
+    const manifestById = new Map<string, ArchiveAssetEntry>(
+      manifest.assets.map((asset) => [asset.mediaId, asset]),
+    );
     const media = { ...parsed.project.entities.media };
-    const plannedStaging: { mediaId: string; key: string; blob: Blob }[] = [];
     const problems: string[] = [];
+    const plans: PlannedAssetRead[] = [];
 
-    // Read every referenced blob before writing anything. An archive missing one
-    // of its own assets fails here, with the project still untouched.
+    // Resolve every referenced blob before writing anything. An archive missing
+    // one of its own assets fails here, with the project still untouched.
     for (const asset of Object.values(media)) {
       if (!isIndexedDbSource(asset)) continue;
 
-      const path = assetPaths.get(asset.id);
-      if (!path) {
+      const listed = manifestById.get(asset.id);
+      if (!listed || listed.archivePath === null) {
         problems.push(`${asset.name} is not listed in manifest.json`);
         continue;
       }
 
-      const entry = byName.get(path) ?? byName.get(archiveAssetPath(asset.id));
+      const entry = byName.get(listed.archivePath) ?? byName.get(archiveAssetPath(asset.id));
       if (!entry) {
-        problems.push(`${asset.name} is listed as ${path} but that entry is missing`);
+        problems.push(`${asset.name} is listed as ${listed.archivePath} but that entry is missing`);
         continue;
       }
 
-      const blob = await entry.getData(new BlobWriter(asset.mimeType || "application/octet-stream"));
-      plannedStaging.push({
-        mediaId: asset.id,
-        key: (options.keyFor ?? uniqueImportedKey)(asset.id, plannedStaging.length),
-        blob,
-      });
+      plans.push({ asset, entry, listed });
     }
 
     if (problems.length > 0) {
@@ -454,6 +734,41 @@ export async function importProjectArchive(
         `The archive is missing ${problems.length} media source${problems.length === 1 ? "" : "s"}.`,
         problems,
       );
+    }
+
+    // Sizes are checked from the central directory first: an archive that lies
+    // about how much its media unpacks to is rejected before it can inflate
+    // anything into memory.
+    assertArchiveAssetSizes(plans, limits);
+
+    // Only now are the bytes inflated. Everything above used the central
+    // directory alone, so an archive that was going to be rejected never had a
+    // single asset unpacked into memory. Every asset is still read before the
+    // first write, which is what makes a storage failure roll back cleanly.
+    const plannedStaging: { mediaId: string; key: string; blob: Blob }[] = [];
+
+    for (const plan of plans) {
+      const blob = await plan.entry.getData(
+        new BlobWriter(plan.asset.mimeType || "application/octet-stream"),
+      );
+
+      // zip.js refuses to return more than the declared size; a blob smaller
+      // than the header claims is the other half of the same guarantee.
+      if (blob.size !== plan.entry.uncompressedSize) {
+        throw new ArchiveError(
+          "invalid-archive",
+          "An archive entry did not unpack to the size its header declares.",
+          [
+            `${plan.asset.name} (${plan.entry.filename}) unpacked to ${blob.size} bytes, not ${plan.entry.uncompressedSize}`,
+          ],
+        );
+      }
+
+      plannedStaging.push({
+        mediaId: plan.asset.id,
+        key: (options.keyFor ?? uniqueImportedKey)(plan.asset.id, plannedStaging.length),
+        blob,
+      });
     }
 
     const total = plannedStaging.length;
@@ -495,12 +810,15 @@ export async function importProjectArchive(
     }
 
     const migrated = migrateDocument({ ...parsed.project, entities: { ...parsed.project.entities, media: remapped } });
-    const { project, issues } = validateProject(migrated.document);
+    const { project, issues: revalidatedIssues } = validateProject(migrated.document);
 
     return {
       project,
       manifest,
-      issues,
+      // What the archived project lost while being read must survive into the
+      // result: `validateProject` here sees a document that is already repaired,
+      // so the dropped Desktop Stage clips only appear in the first pass.
+      issues: mergeIssues(parsed.issues, revalidatedIssues),
       migrations: [...parsed.migrations, ...migrated.applied],
       stagedMedia: staged,
     };
