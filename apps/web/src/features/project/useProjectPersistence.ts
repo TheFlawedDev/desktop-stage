@@ -36,7 +36,11 @@ import {
   unbundledAssetNotice,
   type ArchiveNotice,
 } from "./projectFiles";
-import { ProjectWriteGate, type ManualSaveOutcome } from "./projectWriteGate";
+import {
+  ProjectWriteGate,
+  mayWriteProject,
+  settleRestoreAttempt,
+} from "./projectWriteGate";
 import {
   restoreStoredProject,
   RESTORE_RECOVERED_MESSAGE,
@@ -86,17 +90,6 @@ const FILE_HEAD_BYTES = 512;
  */
 const FUTURE_PROJECT_MESSAGE =
   "This project was saved by a newer version of Desktop Stage; some data may be lost on save.";
-
-/**
- * How far startup restore has got.
- *
- * `pending` blocks every write, so the starter document in memory can never
- * pre-empt the project being read. `failed` is deliberately not a write block
- * for the *automatic* writers: the in-memory document is a starter with a fresh
- * id, so the write cannot land on top of the record that failed to open. A
- * *manual* save is the exception — it is skipped rather than silently creating a
- * second record; see `ProjectWriteGate`.
- */
 
 /**
  * A file's leading bytes, or null when even that cannot be read.
@@ -163,11 +156,11 @@ export interface ProjectPersistence {
   /**
    * Writes the open document now.
    *
-   * Waits for the startup restore first: a save pressed inside that window
-   * would otherwise write the starter document over the shelf. Reports whether
-   * the write actually happened.
+   * Waits for the startup restore first and is dropped when the document is
+   * still the untouched starter after a restore that failed; see
+   * {@link mayWriteProject}.
    */
-  saveNow: () => Promise<ManualSaveOutcome>;
+  saveNow: () => Promise<void>;
   /**
    * Downloads the document alone as JSON.
    *
@@ -206,21 +199,25 @@ export function useProjectPersistence(): ProjectPersistence {
   /**
    * Where the startup restore got to; gates every write until it finishes.
    *
-   * The automatic writers read `restoreGate.state` directly, while a manual save
-   * goes through `runManualSave`, which waits for the restore instead of
-   * reporting a save that never happened.
+   * The automatic writers read `restoreGate.state` and check
+   * {@link mayWriteProject}, while a manual save goes through
+   * `runManualSave`, which waits for the restore and applies the same rule.
    */
-  const restoreGate = useRef(
-    new ProjectWriteGate(() => {
-      // A save was asked for before the restore settled and was not written.
-      // Saying so beats a silent no-op on Ctrl+S.
-      const notice =
-        "Still opening the saved project; press save again in a moment.";
-      setLoadIssues((current) =>
-        current.includes(notice) ? current : [...current, notice],
-      );
-    }),
-  ).current;
+  const restoreGate = useRef(new ProjectWriteGate()).current;
+  /**
+   * The document this session opened with, before any restore replaced it.
+   *
+   * Compared by identity: the store swaps in a new document object on every
+   * edit, import, or "New project", so a changed reference means the user has
+   * authored something worth saving. That is what lets a write through after a
+   * failed restore without ever writing the untouched starter, whose fresh id
+   * and current timestamp would outrank the record that failed to open.
+   */
+  const starterProjectRef = useRef(project);
+  const isUntouchedStarter = useCallback(
+    () => useEditorStore.getState().project === starterProjectRef.current,
+    [],
+  );
   /** The converted legacy document, held from discovery until the user decides. */
   const legacyProjectRef = useRef<ProjectDocument | null>(null);
   /**
@@ -296,18 +293,22 @@ export function useProjectPersistence(): ProjectPersistence {
     };
 
     /**
-     * Records where the restore ended, for every write path to read.
+     * Records where this attempt's restore ended.
      *
-     * The gate keeps the state; `settle` is the only writer and ignores a
-     * second call, so the `finally` below can settle defensively without
-     * un-settling a real outcome.
+     * Settling is a no-op once the attempt has been cancelled: React
+     * development StrictMode replays this effect, and the gate is
+     * first-settle-wins, so a cancelled attempt that settled would pin its
+     * `empty`/`failed` outcome and discard the live replay's real one. The gate
+     * ignores this second settle when a real outcome already landed.
      */
     const settleRestore = (state: "restored" | "empty" | "failed") => {
-      restoreGate.settle(state);
+      settleRestoreAttempt(restoreGate, cancelled, state);
     };
 
     void (async () => {
       try {
+        if (cancelled) return;
+
         if (!isStorageAvailable()) {
           setSaveState("unavailable");
           settleRestore("empty");
@@ -320,7 +321,12 @@ export function useProjectPersistence(): ProjectPersistence {
         try {
           const stored = await loadMostRecentProject();
 
-          if (!cancelled && stored) {
+          // The effect may have been replayed or unmounted while the read was
+          // in flight. A cancelled attempt must not settle the gate or touch any
+          // user-visible restore state.
+          if (cancelled) return;
+
+          if (stored) {
             // The stored record is untrusted input: it may have been written by
             // another build (newer or older), or edited outside the app. Migrate
             // and validate it before the editor renders it, and report what was
@@ -350,8 +356,8 @@ export function useProjectPersistence(): ProjectPersistence {
               // The record is left exactly as it is. The document now in memory
               // is the starter scene with its own fresh id, so nothing this
               // session saves can be written on top of the project that failed
-              // to open. A manual save is refused rather than allowed to create
-              // that second record; see `ProjectWriteGate`.
+              // to open: the untouched starter is held back by `mayWriteProject`
+              // until the user edits or opens something else.
               setLoadIssues([result.error]);
               settleRestore("failed");
             }
@@ -362,6 +368,7 @@ export function useProjectPersistence(): ProjectPersistence {
           // A failed read must never block the editor from opening, and must not
           // be treated as "no project here": the stored record stays untouched
           // (the in-memory starter has a different id).
+          if (cancelled) return;
           const detail = error instanceof Error ? error.message : String(error);
           setLoadIssues([`The saved project could not be read: ${detail}`]);
           settleRestore("failed");
@@ -376,11 +383,10 @@ export function useProjectPersistence(): ProjectPersistence {
         // cost of not sweeping is disk space, which is the safer failure. See
         // docs/DEVELOPMENT.md — "Deferred media cleanup".
       } finally {
-        // Any path that did not settle explicitly counts as failed. Autosave is
-        // then unblocked, but the starter's fresh id means the write lands in a
-        // new record rather than over the one that could not be read. The gate
-        // ignores this second settle when a real outcome already landed.
-        settleRestore("failed");
+        // Any path that did not settle explicitly counts as failed, so no write
+        // is left gated forever by a bug above. A cancelled attempt settles
+        // nothing: the live replay owns the gate's outcome.
+        if (!cancelled) settleRestore("failed");
       }
     })();
 
@@ -392,33 +398,35 @@ export function useProjectPersistence(): ProjectPersistence {
   }, []);
 
   // --- Debounced autosave ----------------------------------------------
-  // Nothing is written until the restore has finished. That covers the startup
-  // window in both directions: the starter document cannot land before the
-  // stored project is read, and the legacy candidate — which lives in
-  // `localStorage` and is read, never written, here — is untouched until the
-  // user decides.
+  // Nothing is written until the restore has finished, and nothing is written
+  // for the untouched starter after a failed restore — see `mayWriteProject`.
+  // That also covers the legacy candidate, which lives in `localStorage` and is
+  // read, never written, here until the user decides.
   useEffect(() => {
-    if (restoreGate.state === "pending") return;
+    if (!mayWriteProject(restoreGate.state, isUntouchedStarter())) return;
 
     if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(
-      () => void persist(project),
-      AUTOSAVE_DELAY_MS,
-    );
+    timerRef.current = setTimeout(() => {
+      // Re-checked at fire time: an undo can put the untouched starter back in
+      // memory between scheduling this write and it running.
+      if (!mayWriteProject(restoreGate.state, isUntouchedStarter())) return;
+      void persist(project);
+    }, AUTOSAVE_DELAY_MS);
 
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [project, persist]);
+  }, [project, persist, isUntouchedStarter]);
 
   // --- Save on the way out ---------------------------------------------
   useEffect(() => {
     const handleBeforeUnload = () => {
-      // Nothing may be flushed before the restore has read the shelf: until then
-      // the in-memory document is the starter scene, and writing it would put a
-      // project the user never authored on the shelf with a newer `savedAt` than
-      // the one being restored.
-      if (restoreGate.state === "pending") return;
+      // The same rule as the debounced autosave: nothing may be flushed before
+      // the restore has read the shelf, and the untouched starter may not be
+      // flushed after a restore that failed. Either write would put a project
+      // the user never authored on the shelf with a newer `savedAt` than the
+      // record it should be read from.
+      if (!mayWriteProject(restoreGate.state, isUntouchedStarter())) return;
 
       // A pending debounce would be lost when the tab closes, so the latest
       // state is flushed synchronously-ish here. Best effort: browsers do not
@@ -429,18 +437,19 @@ export function useProjectPersistence(): ProjectPersistence {
 
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, []);
+  }, [isUntouchedStarter]);
 
-  const saveNow = useCallback(async (): Promise<ManualSaveOutcome> => {
+  const saveNow = useCallback(async (): Promise<void> => {
     // The explicit save is the third writer: `Ctrl/Cmd+S` is live from mount,
     // and inside the restore window the in-memory document is the starter. The
     // gate waits for the restore rather than writing the starter into the shelf
-    // with a newer `savedAt` than the project being restored.
+    // with a newer `savedAt` than the project being restored, and applies the
+    // same untouched-starter rule as the automatic writers.
     return restoreGate.runManualSave(async () => {
       if (timerRef.current) clearTimeout(timerRef.current);
       await persist(useEditorStore.getState().project);
-    });
-  }, [persist, restoreGate]);
+    }, isUntouchedStarter);
+  }, [persist, restoreGate, isUntouchedStarter]);
 
   /**
    * Document-only JSON export.

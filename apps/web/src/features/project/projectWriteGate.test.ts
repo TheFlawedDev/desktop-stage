@@ -1,23 +1,73 @@
 /**
  * Tests for the startup write gate.
  *
- * These pin the one write path the persistence audit found ungated: a manual
- * save (`Ctrl/Cmd+S` → `saveNow`) fired inside the startup window. Before the
- * gate, that wrote the in-memory starter — a fresh id with `savedAt = now` —
- * so retrieval by highest `savedAt` made the project being restored permanently
- * unreachable.
+ * These pin the three write paths the persistence audit found mis-gated: a
+ * manual save (`Ctrl/Cmd+S` → `saveNow`) fired inside the startup window, the
+ * automatic writers after a *failed* restore, and the settle itself when React
+ * development StrictMode replays the restore effect.
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { ProjectWriteGate } from "./projectWriteGate";
+import {
+  ProjectWriteGate,
+  mayWriteProject,
+  settleRestoreAttempt,
+} from "./projectWriteGate";
+
+describe("mayWriteProject", () => {
+  it("blocks every write while the restore is pending", () => {
+    expect(mayWriteProject("pending", false)).toBe(false);
+    expect(mayWriteProject("pending", true)).toBe(false);
+  });
+
+  it("allows writes once the restore settled restored or empty", () => {
+    expect(mayWriteProject("restored", false)).toBe(true);
+    expect(mayWriteProject("empty", false)).toBe(true);
+    expect(mayWriteProject("empty", true)).toBe(true);
+  });
+
+  it("blocks the untouched starter after a failed restore", () => {
+    // Writing it would create a fresh-id record with `savedAt = now` that wins
+    // `loadMostRecentProject` and hides the record that failed to open.
+    expect(mayWriteProject("failed", true)).toBe(false);
+  });
+
+  it("allows writes after a failed restore once the document changed", () => {
+    expect(mayWriteProject("failed", false)).toBe(true);
+  });
+});
+
+describe("settleRestoreAttempt", () => {
+  it("settles nothing from a cancelled attempt", () => {
+    const gate = new ProjectWriteGate();
+
+    expect(settleRestoreAttempt(gate, true, "failed")).toBe(false);
+    expect(settleRestoreAttempt(gate, true, "empty")).toBe(false);
+    expect(gate.state).toBe("pending");
+  });
+
+  it("lets the live replay settle after a cancelled attempt finishes first", () => {
+    const gate = new ProjectWriteGate();
+
+    // StrictMode mounts the restore effect twice: the first mount's cleanup
+    // cancels its attempt and a replay starts. The cancelled attempt's read
+    // resolves first, and the gate is first-settle-wins — so if it settled, the
+    // replay's real outcome could never land and the restored document would be
+    // gated off as a failure.
+    expect(settleRestoreAttempt(gate, true, "failed")).toBe(false);
+    expect(gate.state).toBe("pending");
+
+    expect(settleRestoreAttempt(gate, false, "restored")).toBe(true);
+    expect(gate.state).toBe("restored");
+  });
+});
 
 describe("ProjectWriteGate", () => {
   it("blocks a save requested before the restore settles", async () => {
-    const onSkipped = vi.fn();
-    const gate = new ProjectWriteGate(onSkipped);
+    const gate = new ProjectWriteGate();
     const write = vi.fn(async () => {});
 
-    const outcome = gate.runManualSave(write);
+    const outcome = gate.runManualSave(write, () => false);
 
     // Nothing may be written while the restore is still reading the shelf.
     await Promise.resolve();
@@ -25,47 +75,52 @@ describe("ProjectWriteGate", () => {
 
     gate.settle("restored");
 
-    await expect(outcome).resolves.toBe("written");
+    await expect(outcome).resolves.toBeUndefined();
     expect(write).toHaveBeenCalledTimes(1);
-    expect(onSkipped).not.toHaveBeenCalled();
   });
 
   it("writes immediately once the restore has settled", async () => {
-    const gate = new ProjectWriteGate(() => {});
+    const gate = new ProjectWriteGate();
     gate.settle("restored");
 
     const write = vi.fn(async () => {});
-    await expect(gate.runManualSave(write)).resolves.toBe("written");
+    await gate.runManualSave(write, () => false);
     expect(write).toHaveBeenCalledTimes(1);
   });
 
-  it("skips a save requested after a failed restore", async () => {
-    const onSkipped = vi.fn();
-    const gate = new ProjectWriteGate(onSkipped);
+  it("skips a manual save of the untouched starter after a failed restore", async () => {
+    const gate = new ProjectWriteGate();
     gate.settle("failed");
 
     const write = vi.fn(async () => {});
-    await expect(gate.runManualSave(write)).resolves.toBe("skipped");
+    await gate.runManualSave(write, () => true);
 
     expect(write).not.toHaveBeenCalled();
-    expect(onSkipped).toHaveBeenCalledTimes(1);
   });
 
   it("skips a save that was waiting when the restore failed", async () => {
-    const onSkipped = vi.fn();
-    const gate = new ProjectWriteGate(onSkipped);
+    const gate = new ProjectWriteGate();
     const write = vi.fn(async () => {});
 
-    const outcome = gate.runManualSave(write);
+    const outcome = gate.runManualSave(write, () => true);
     gate.settle("failed");
 
-    await expect(outcome).resolves.toBe("skipped");
+    await expect(outcome).resolves.toBeUndefined();
     expect(write).not.toHaveBeenCalled();
-    expect(onSkipped).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes a manual save after a failed restore once the document changed", async () => {
+    const gate = new ProjectWriteGate();
+    gate.settle("failed");
+
+    const write = vi.fn(async () => {});
+    await gate.runManualSave(write, () => false);
+
+    expect(write).toHaveBeenCalledTimes(1);
   });
 
   it("settles once, so a later settle cannot reopen the gate", async () => {
-    const gate = new ProjectWriteGate(() => {});
+    const gate = new ProjectWriteGate();
     gate.settle("empty");
     gate.settle("failed");
 
@@ -73,7 +128,7 @@ describe("ProjectWriteGate", () => {
   });
 
   it("does not settle until something settles it", async () => {
-    const gate = new ProjectWriteGate(() => {});
+    const gate = new ProjectWriteGate();
     expect(gate.state).toBe("pending");
 
     let resolved = false;
