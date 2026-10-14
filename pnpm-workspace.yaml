@@ -1,0 +1,33 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# Dependency install scripts.
+#
+# None of the packages in this workspace needs a build-time script to run for the
+# editor to work: the native artifacts it uses (SWC for Next, the Go esbuild
+# binary, prebuilt sharp/unrs-resolver platform packages) all ship as optional
+# platform dependencies, and the Node-side ONNX runtime is never loaded by the
+# browser build. Listing them explicitly keeps installs deterministic and
+# script-free instead of leaving pnpm to prompt for each one.
+allowBuilds:
+  esbuild: false
+  onnxruntime-node: false
+  protobufjs: false
+  sharp: false
+  unrs-resolver: false
+
+# Hoisted (npm-style) node_modules.
+#
+# pnpm's default isolated linker exposes dependencies through junctions inside
+# its virtual store, and Node's module resolver does not always follow those
+# junctions for nested dependencies — which is fatal for Vitest, Turbopack, and
+# other tooling that resolves packages from their real path. The hoisted layout
+# resolves like a plain npm install on Windows and macOS, so the toolchain
+# behaves identically on both.
+nodeLinker: hoisted
+
+# Changing the linker rewrites node_modules, and pnpm asks before deleting a
+# directory it did not create. The prompt cannot be answered in CI, so installs
+# are non-interactive by default here.
+confirmModulesPurge: false

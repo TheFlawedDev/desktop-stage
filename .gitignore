@@ -1,8 +1,15 @@
 # Dependencies and generated builds
 node_modules/
 dist/
+build/
+out/
+.next/
+.turbo/
+coverage/
+.pnpm-store/
 .vite/
 *.tsbuildinfo
+next-env.d.ts
 
 # Local environment configuration and secrets
 .env
@@ -18,6 +25,7 @@ pnpm-debug.log*
 
 # User-created local project exports and working artifacts
 desktop-stage-project.json
+*.desktopstage
 work/
 outputs/
 
