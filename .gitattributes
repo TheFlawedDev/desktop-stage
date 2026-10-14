@@ -1,0 +1,8 @@
+# Line endings for the legal notices.
+#
+# These files must have the same bytes on every platform. Git for Windows ships
+# with core.autocrlf=true, which would otherwise check them out with CRLF and
+# leave the line endings up to the machine that happens to be committing.
+LICENSE text eol=lf
+LICENSE-CUTAWAY text eol=lf
+THIRD_PARTY_NOTICES.md text eol=lf
