@@ -134,10 +134,11 @@ export function PreviewPanel() {
 /**
  * First-run guidance.
  *
- * Shown only while the timeline is empty, and never interactive — it sits over
- * the stage purely so the first thing someone sees answers "what now?" instead
- * of being an unexplained black rectangle. It disappears the moment a clip
- * exists, so it costs a returning user nothing.
+ * Shown only while the timeline is empty — a fresh session opens the starter
+ * desktop, so this is what a project looks like after everything has been
+ * deleted, not what greets a new user. It is never interactive; it sits over the
+ * stage purely so an empty frame answers "what now?" instead of being an
+ * unexplained black rectangle.
  */
 function StartHint() {
   return (
@@ -147,10 +148,10 @@ function StartHint() {
     >
       <div className="flex flex-col items-center gap-1.5">
         <Film size={22} className="text-text-tertiary/50" />
-        <p className="text-text-secondary text-xs font-medium">Import media to get started</p>
+        <p className="text-text-secondary text-xs font-medium">This scene is empty</p>
         <p className="text-text-tertiary text-2xs max-w-[240px] leading-relaxed">
-          Drag a video, image, or audio file anywhere in the window — or press Import. Nothing is
-          uploaded.
+          Import media to add footage, or start a new project to get the four-window starter scene
+          back. Nothing is uploaded.
         </p>
       </div>
     </div>

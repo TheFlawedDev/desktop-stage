@@ -2,7 +2,8 @@
 
 import type { FrameSource } from "@cutaway/export-engine";
 import type { MediaBlobStore } from "@cutaway/media-engine";
-import { planVideoDecodeSchedule, resolveScene, type Scene } from "@cutaway/render-engine";
+import { planVideoDecodeSchedule, type Scene } from "@cutaway/render-engine";
+import { resolveDesktopScene } from "@desktop-stage/desktop-engine";
 import type { ProjectDocument, Size } from "@cutaway/types";
 import { MediaTextureCache } from "@/features/preview/MediaTextureCache";
 import { PixiSceneRenderer } from "@/features/preview/PixiSceneRenderer";
@@ -13,11 +14,11 @@ import { ExactVideoDecoders } from "./ExactVideoDecoders";
  * preview uses.
  *
  * This is what makes the exported file match the preview rather than merely
- * resemble it: both consume `resolveScene`, and both draw through
- * `PixiSceneRenderer`. The only differences are headless ones — the canvas is
- * the full project resolution (pixel ratio 1, no display scaling) and each
- * frame is fully prepared *before* it is captured, because an export must never
- * race a texture decode the way a realtime preview tolerates.
+ * resemble it: both consume the Desktop Stage scene resolver, and both draw
+ * through `PixiSceneRenderer`. The only differences are headless ones — the
+ * canvas is the full project resolution (pixel ratio 1, no display scaling) and
+ * each frame is fully prepared *before* it is captured, because an export must
+ * never race a texture decode the way a realtime preview tolerates.
  *
  * Video is decoded frame-exactly with WebCodecs (see {@link ExactVideoDecoders})
  * rather than by seeking a `<video>` element, so the frame encoded at each
@@ -73,7 +74,9 @@ export class PixiExportFrameSource implements FrameSource<VideoFrame> {
   }
 
   async renderFrame(frame: number): Promise<VideoFrame> {
-    const scene = resolveScene(this.project, frame);
+    // The same resolver the preview calls, so an exported frame and the frame on
+    // screen are the same scene — including the simulated desktop windows.
+    const scene = resolveDesktopScene(this.project, frame);
     await this.prepareMedia(scene);
 
     // displayWidth === project width ⇒ scale 1, i.e. a full-resolution draw.

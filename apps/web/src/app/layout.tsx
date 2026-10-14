@@ -9,8 +9,9 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Cutaway",
-  description: "Open-source, local-first video editor for creators.",
+  title: "Desktop Stage",
+  description:
+    "Local-first editor for authoring fictional, animated desktop scenes for screenlife-style video.",
 };
 
 export const viewport: Viewport = {

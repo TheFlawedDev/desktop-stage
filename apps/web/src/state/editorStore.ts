@@ -15,6 +15,7 @@ import { computeDuration, moveClip, rippleDelete, splitClip } from "@cutaway/tim
 import { retimeBlock, shiftBlock } from "@cutaway/caption-engine";
 import { createClipForAsset, trackKindForAsset } from "@cutaway/media-engine";
 import { createId, createProject, createTrack } from "@cutaway/utils";
+import { createStarterProject } from "@desktop-stage/desktop-engine";
 import {
   canRedo as historyCanRedo,
   canUndo as historyCanUndo,
@@ -123,6 +124,14 @@ export interface EditorState {
 
   /** Swaps in a whole document, on project load or restore. */
   replaceProject: (project: ProjectDocument) => void;
+  /**
+   * Starts over from a fresh starter scene.
+   *
+   * The same document a cold start opens with, so "New project" and "first
+   * launch" can never drift apart. Reset like {@link replaceProject} rather than
+   * undone, because there is no document afterwards to undo back into.
+   */
+  newProject: () => void;
   renameProject: (name: string) => void;
   /** Switches the project's output aspect ratio (and resolution). */
   setAspectRatio: (id: AspectRatioPreset, resolution: { width: number; height: number }) => void;
@@ -165,11 +174,17 @@ function commit(
   };
 }
 
-const initialProject = createProject();
+/**
+ * The document a session starts from.
+ *
+ * The four-window starter scene, built through the v1 converter rather than
+ * authored twice, so a fresh editor immediately shows what the tool is for and
+ * the conversion path is exercised on every launch. A persisted project
+ * replaces it as soon as the restore completes.
+ */
+const initialProject = createStarterProject();
 
 export const useEditorStore = create<EditorState>()((set, get) => ({
-  // Opens empty. No demo content, no sample project — import your footage and
-  // start, which is the whole promise of the tool.
   project: initialProject,
   history: createHistory(initialProject, "New project"),
 
@@ -416,6 +431,21 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       isPlaying: false,
       inPoint: null,
       outPoint: null,
+    }),
+
+  newProject: () =>
+    set(() => {
+      const project = createStarterProject();
+      return {
+        project,
+        history: createHistory(project, "New project"),
+        playhead: 0,
+        scrollFrame: 0,
+        selectedClipIds: [],
+        isPlaying: false,
+        inPoint: null,
+        outPoint: null,
+      };
     }),
 
   renameProject: (name) =>

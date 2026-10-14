@@ -21,12 +21,17 @@ import { fileURLToPath } from "node:url";
  */
 const root = fileURLToPath(new URL(".", import.meta.url));
 
-const alias = Object.fromEntries(
+// `@cutaway/*` is aliased wholesale because the web app links most of the
+// workspace that way. `@desktop-stage/desktop-engine` is aliased explicitly: it
+// is the one workspace package outside the `@cutaway` scope, and the web app's
+// tests import it for its payload types.
+const alias: Record<string, string> = Object.fromEntries(
   readdirSync(`${root}packages`).map((name) => [
     `@cutaway/${name}`,
     `${root}packages/${name}/src/index.ts`,
   ]),
 );
+alias["@desktop-stage/desktop-engine"] = `${root}packages/desktop-engine/src/index.ts`;
 
 export default defineConfig({
   resolve: {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { resolveScene } from "@cutaway/render-engine";
+import { resolveDesktopScene } from "@desktop-stage/desktop-engine";
 import { MediaTextureCache } from "./MediaTextureCache";
 import { PixiSceneRenderer } from "./PixiSceneRenderer";
 import { probeWebGLSupport } from "./webglSupport";
@@ -130,8 +130,10 @@ export function PreviewStage({ width, height }: PreviewStageProps) {
     if (!isReady || width === 0) return;
 
     // The one line that makes preview and export structurally identical: both
-    // draw whatever `resolveScene` returns for this frame.
-    const scene = resolveScene(project, playhead);
+    // draw whatever the Desktop Stage scene resolver returns for this frame.
+    // It is `resolveScene` plus the desktop layer — the desktop's own resolver
+    // is shared, not reimplemented, so the preview cannot drift from the export.
+    const scene = resolveDesktopScene(project, playhead);
     rendererRef.current?.render(scene, project.entities.media, width, isPlaying);
   }, [isReady, project, playhead, isPlaying, width, height, textureEpoch]);
 

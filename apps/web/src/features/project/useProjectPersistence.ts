@@ -178,7 +178,7 @@ export function useProjectPersistence(): ProjectPersistence {
       ];
       if (result.fromFuture) {
         messages.unshift(
-          "This project was saved by a newer version of Cutaway; some data may be lost on save.",
+          "This project was saved by a newer version of Desktop Stage; some data may be lost on save.",
         );
       }
       setLoadIssues(messages);

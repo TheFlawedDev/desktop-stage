@@ -14,6 +14,12 @@ import {
 } from "pixi.js";
 import type { Scene, SceneNode } from "@cutaway/render-engine";
 import type { ResolvedEffect } from "@cutaway/effects-engine";
+import { DESKTOP_WINDOW_CONTENT_TYPE } from "@desktop-stage/desktop-engine";
+import {
+  DesktopWindowView,
+  createDesktopWindow,
+  readDesktopWindowPayload,
+} from "@/features/desktop-stage/desktopWindowGraphics";
 import {
   EFFECT_BLUR,
   EFFECT_CHROMA,
@@ -31,9 +37,9 @@ import { MediaTextureCache } from "./MediaTextureCache";
 /**
  * PixiJS backend for the resolved scene.
  *
- * This class knows *how* to draw; `resolveScene` decided *what*. Keeping that
- * line sharp is what lets the export path reuse the resolver with a completely
- * different backend later.
+ * This class knows *how* to draw; the Desktop Stage scene resolver decided
+ * *what*. Keeping that line sharp is what lets the export path reuse the
+ * resolver with a completely different backend later.
  *
  * Display objects are reconciled by clip id rather than rebuilt each frame.
  * Tearing down and recreating the stage sixty times a second would thrash the
@@ -479,10 +485,18 @@ export class PixiSceneRenderer {
       case "shape":
         return new Graphics();
 
+      case "plugin":
+        // Desktop Stage windows are the one plugin payload this build can draw.
+        // Every other plugin content type stays a hole — the documented
+        // degradation for a project opened without its plugin.
+        return node.content.contentType === DESKTOP_WINDOW_CONTENT_TYPE
+          ? createDesktopWindow(node.content.data)
+          : null;
+
       default:
-        // SVG and plugin content are not renderable yet. Returning null leaves
-        // a hole rather than crashing, which is the documented degradation for
-        // a project opened without its plugin.
+        // SVG is not renderable yet. Returning null leaves a hole rather than
+        // crashing, which is the documented degradation for a project opened
+        // without its plugin.
         return null;
     }
   }
@@ -544,6 +558,10 @@ export class PixiSceneRenderer {
     } else {
       // Graphics has no anchor; approximate by offsetting the pivot to its
       // measured bounds so rotation still happens about the intended point.
+      //
+      // For a desktop window, whose local origin is its top-left corner, this
+      // also puts the node's position at the window's centre — exactly where the
+      // Desktop Stage scene adapter placed it.
       const bounds = container.getLocalBounds();
       container.pivot.set(bounds.width * transform.anchor.x, bounds.height * transform.anchor.y);
     }
@@ -579,6 +597,23 @@ export class PixiSceneRenderer {
       case "shape": {
         if (!(container instanceof Graphics)) return;
         this.drawShape(container, node);
+        return;
+      }
+
+      case "plugin": {
+        if (!(container instanceof DesktopWindowView)) return;
+        if (node.content.contentType !== DESKTOP_WINDOW_CONTENT_TYPE) return;
+
+        // The window is re-laid-out from the node every frame, so an action that
+        // renames a title or appends a terminal line is visible immediately —
+        // and a window that only moved is a no-op beyond its transform.
+        //
+        // The payload's size is already the *resolved* size: the scene adapter
+        // multiplies the authored size by the clip's animated scale and places
+        // the node at scale 1, so the drawing must not scale it a second time.
+        const payload = readDesktopWindowPayload(node.content.data);
+        if (!payload) return;
+        container.sync(payload, payload.width, payload.height);
         return;
       }
 

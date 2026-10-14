@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Download, FolderOpen, Import, Keyboard, Redo2, Save, Undo2 } from "lucide-react";
+import { Download, FilePlus, FolderOpen, Import, Keyboard, Redo2, Save, Undo2 } from "lucide-react";
 import { Button, IconButton } from "@cutaway/ui";
 import { ASPECT_RATIOS, resolutionForAspect } from "@cutaway/utils";
 import { useEditorStore } from "@/state/editorStore";
@@ -32,9 +32,9 @@ export function TopToolbar() {
     <header className="border-border-subtle bg-surface-panel flex h-(--size-toolbar-height) shrink-0 items-center gap-1 border-b px-3">
       <div className="flex items-center gap-2 pr-2">
         <div className="bg-accent text-accent-text grid h-6 w-6 place-items-center rounded-sm text-xs font-bold">
-          C
+          D
         </div>
-        <span className="text-text-primary text-sm font-semibold">Cutaway</span>
+        <span className="text-text-primary text-sm font-semibold">Desktop Stage</span>
       </div>
 
       <div className="bg-border-subtle mx-1 h-5 w-px" />
@@ -96,6 +96,8 @@ export function TopToolbar() {
 
       <HelpButton />
 
+      <NewProjectButton />
+
       <IconButton
         size="sm"
         label="Open project file"
@@ -120,6 +122,31 @@ export function TopToolbar() {
 
       <ExportButton />
     </header>
+  );
+}
+
+/**
+ * New-project control.
+ *
+ * Confirms first, because the action discards the open document. It is not an
+ * undo step: undo history is reset with the document, so an accidental press
+ * could not be taken back — which is exactly why the question is asked.
+ */
+function NewProjectButton() {
+  const newProject = useEditorStore((state) => state.newProject);
+
+  return (
+    <IconButton
+      size="sm"
+      label="New project"
+      onClick={() => {
+        if (window.confirm("Start a new project? Unsaved changes to this one are discarded.")) {
+          newProject();
+        }
+      }}
+    >
+      <FilePlus size={14} />
+    </IconButton>
   );
 }
 

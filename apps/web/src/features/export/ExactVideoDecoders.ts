@@ -20,9 +20,10 @@ import type { Id, ProjectDocument } from "@cutaway/types";
  * decoding pipeline only emits a frame once it knows the *next* timestamp, so a
  * one-at-a-time feed would deadlock. Hence the planning pass.
  *
- * Because the schedule and the render loop are both derived from `resolveScene`
- * over the same frames, the two stay in lockstep — one decoded frame per
- * request. {@link ExactVideoDecoders.next} still verifies that, and falls back
+ * Because the schedule and the render loop are both derived from the scene
+ * resolver over the same frames (media timelines come from the generic resolver
+ * either way; the Desktop Stage layer adds no video), the two stay in lockstep —
+ * one decoded frame per request. {@link ExactVideoDecoders.next} still verifies that, and falls back
  * to a direct (slower) fetch if they ever disagree, so a drift becomes a slow
  * frame rather than a wrong one.
  */
