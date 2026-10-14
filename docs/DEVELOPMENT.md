@@ -5,15 +5,15 @@
 A pnpm workspace. The dependency rule is downward-only; a cycle between layers is a bug, not a
 style preference. See [`cutaway-architecture.md`](cutaway-architecture.md) for the reasoning.
 
-| Path | What lives there |
-| --- | --- |
-| `apps/web` | The Next.js editor application. React only; business logic belongs in `packages/*`. |
-| `packages/types` | The project document: entities, clip payloads, and the Desktop Stage payload families. |
-| `packages/utils`, `packages/*-engine` | Pure domain and engine logic. No React, no DOM, runnable in Node. |
-| `packages/project-io` | Parsing, validation, migration, and the `.desktopstage` archive. Storage is injected. |
-| `packages/media-engine` | The `MediaBlobStore` interface and its IndexedDB implementation. |
-| `packages/desktop-engine` | The Desktop Stage extension: versioned payloads, the version 1 converter, and the frame resolver preview and export share. |
-| `outputs/` | Plans and notes kept with the repository. Not build input. |
+| Path                                  | What lives there                                                                                                           |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `apps/web`                            | The Next.js editor application. React only; business logic belongs in `packages/*`.                                        |
+| `packages/types`                      | The project document: entities, clip payloads, and the Desktop Stage payload families.                                     |
+| `packages/utils`, `packages/*-engine` | Pure domain and engine logic. No React, no DOM, runnable in Node.                                                          |
+| `packages/project-io`                 | Parsing, validation, migration, and the `.desktopstage` archive. Storage is injected.                                      |
+| `packages/media-engine`               | The `MediaBlobStore` interface and its IndexedDB implementation.                                                           |
+| `packages/desktop-engine`             | The Desktop Stage extension: versioned payloads, the version 1 converter, and the frame resolver preview and export share. |
+| `outputs/`                            | Plans and notes kept with the repository. Not build input.                                                                 |
 
 ## Commands
 
@@ -36,7 +36,7 @@ sources and no build step is needed first.
 
 ## The portable `.desktopstage` archive
 
-The JSON project format stores *references* to media bytes in IndexedDB. A JSON download therefore
+The JSON project format stores _references_ to media bytes in IndexedDB. A JSON download therefore
 cannot move a media-rich project to another computer — the file travels, the footage does not. The
 archive closes that gap:
 
@@ -56,7 +56,7 @@ store and the web app passes the IndexedDB store from `useMediaImportContext().s
 
 ### Why the order of operations matters
 
-- **Export** reads every referenced source blob *before* writing a byte. An export that cannot be
+- **Export** reads every referenced source blob _before_ writing a byte. An export that cannot be
   complete fails immediately with the list of what is missing, instead of producing a half-archive
   that would import with silent gaps.
 - **Import** validates the archive, reads every referenced asset, stages the blobs under fresh keys,
@@ -73,7 +73,7 @@ store and the web app passes the IndexedDB store from `useMediaImportContext().s
   that is compressed past a practical ratio is rejected without inflating it; `manifest.json` and
   `project.json` are bounded too. The ceilings are `DEFAULT_ARCHIVE_LIMITS` in `archive.ts` (512 MiB
   per asset, 2 GiB in total, 200:1 above a 1 MiB floor, 64 MiB per metadata file) and can be raised or
-  lowered per import through `ArchiveImportOptions.limits`. They bound *declared output*, not the
+  lowered per import through `ArchiveImportOptions.limits`. They bound _declared output_, not the
   memory the decode retains: import holds every staged blob until the write phase, so the aggregate
   number is the one sized for a browser tab.
 - **The manifest is authoritative and bound to the id.** Each bundled asset's recorded `archivePath`
@@ -83,12 +83,13 @@ store and the web app passes the IndexedDB store from `useMediaImportContext().s
 
 The UI side lives in `apps/web/src/features/project/`:
 
-| File | Responsibility |
-| --- | --- |
-| `projectFiles.ts` | Pure decisions: which reader a file goes to, how a failure reads, how big it is, how far along it is |
-| `useProjectPersistence.ts` | Autosave, restore, and the archive/JSON open and export flows |
-| `downloadBlob.ts` | The anchor-based download, including object-URL revocation |
-| `ArchiveStatusBanner.tsx` | Packing/unpacking progress and the outcome, including the failure details |
+| File                       | Responsibility                                                                                         |
+| -------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `projectFiles.ts`          | Pure decisions: which reader a file goes to, how a failure reads, how big it is, how far along it is   |
+| `useProjectPersistence.ts` | Autosave, restore, and the archive/JSON open and export flows                                          |
+| `restoreStoredProject.ts`  | Migrates and validates one stored record, and decides whether it may be written back to its own record |
+| `downloadBlob.ts`          | The anchor-based download, including object-URL revocation                                             |
+| `ArchiveStatusBanner.tsx`  | Packing/unpacking progress and the outcome, including the failure details                              |
 
 ### File-kind dispatch
 
@@ -117,18 +118,35 @@ either:
   (`removeMediaAsset` → the undo history), and the document is only autosaved shortly afterwards.
   Deleting the blobs at removal time would break undo and lose the media of a project that has not
   been saved yet.
-- **Stored documents are migrated and validated on restore**, exactly like a file, through
-  `apps/web/src/features/project/restoreStoredProject.ts`. A record the validator cannot repair is
-  reported and left untouched; the session continues on the starter project, whose project id is
-  minted fresh per call (`createStarterProject`), so nothing it saves can land on the stored record.
+- **Stored documents are migrated and validated on restore**, through
+  `apps/web/src/features/project/restoreStoredProject.ts`. There is no startup
+  write until the restore has settled, so the starter document can never land on
+  the shelf first; a manual save (`Ctrl/Cmd+S`) waits for the restore rather than
+  writing the starter. A record that is not a project document, or has no usable
+  project id, is reported as a failed restore and left alone — the validator is
+  total and would otherwise accept it as an empty project, which the next
+  autosave would then store as a second record. A record that was **migrated,
+  repaired, or written by a newer build** is opened as a fresh-id copy: the
+  restored document is deliberately not byte-identical to what is stored, and the
+  record is the only copy, so writing the repaired version back over it would
+  destroy the original with no user action and no backup. The copy is saved
+  beside the original instead, and the load banner says so. Only a clean restore
+  keeps its id and updates its own record.
 
 ### Deferred media cleanup
 
 There is currently **no garbage collection of media bytes**. The startup sweep that used to run was
 removed because it was unsafe: it built its "referenced" set from stored documents only, so it could
 not see media another tab was staging for an in-flight archive import, or bytes an unsaved/undone edit
-still pointed at, and would delete live media. Orphaned blobs — from a removal, a deleted project, or
-an interrupted import — therefore accumulate until a safe sweep exists.
+still pointed at, and would delete live media. Orphaned blobs — from a removal, or an import whose
+bytes were written but which never produced an asset — therefore accumulate until a safe sweep exists.
+
+The pipeline does not wait for that sweep where it can help it. An asset removal still deletes
+nothing, because it is an undoable document edit. But when `importFile` has already written the
+source bytes and the probe that follows fails before a `MediaAsset` exists, the import deletes the
+one key it just staged: no asset ever referenced it, and nothing else can. That is the only deletion
+the import path performs, and it is bounded to the key it wrote — never a stored key, and never bytes
+a removal or undo still points at.
 
 A safe sweep needs a reference count or a lease (a staged blob marked in use before it is written, and
 a grace period before anything unreferenced is deleted); it must not be replaced by another
