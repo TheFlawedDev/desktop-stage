@@ -1,6 +1,8 @@
 "use client";
 
-import { AlertTriangle, X } from "lucide-react";
+import { AlertTriangle, Trash2, X } from "lucide-react";
+import { Button } from "@cutaway/ui";
+import { useEditorStore } from "@/state/editorStore";
 import { useProject } from "./ProjectProvider";
 
 /**
@@ -18,8 +20,18 @@ import { useProject } from "./ProjectProvider";
  */
 export function LoadIssuesBanner() {
   const { loadIssues, dismissIssues } = useProject();
+  const pruneOrphanedActions = useEditorStore((state) => state.pruneOrphanedActions);
 
   if (loadIssues.length === 0) return null;
+
+  const hasOrphanedActions = loadIssues.some((issue) =>
+    issue.includes("Action targets app instance")
+  );
+
+  const handlePrune = () => {
+    pruneOrphanedActions();
+    dismissIssues();
+  };
 
   return (
     <div className="absolute bottom-10 left-1/2 z-40 w-[min(560px,90vw)] -translate-x-1/2">
@@ -28,9 +40,21 @@ export function LoadIssuesBanner() {
           <AlertTriangle size={14} className="text-warning mt-0.5 shrink-0" />
 
           <div className="min-w-0 flex-1">
-            <p className="text-text-primary text-xs font-medium">
-              Load reported {loadIssues.length} issue{loadIssues.length === 1 ? "" : "s"}
-            </p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-text-primary text-xs font-medium">
+                Load reported {loadIssues.length} issue{loadIssues.length === 1 ? "" : "s"}
+              </p>
+              {hasOrphanedActions && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon={<Trash2 size={12} />}
+                  onClick={handlePrune}
+                >
+                  Remove Orphaned Actions
+                </Button>
+              )}
+            </div>
             <ul className="mt-1 max-h-40 space-y-0.5 overflow-auto">
               {loadIssues.map((issue, index) => (
                 <li key={index} className="text-2xs text-text-secondary">

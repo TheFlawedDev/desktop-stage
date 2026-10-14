@@ -113,9 +113,12 @@ export function restoreStoredProject(
     // record came from a build this one does not fully understand. In every case
     // the restored document is not byte-identical to what is stored, so it must
     // be saved as a copy rather than over the original.
+    const hasRepairsOrDrops = validationIssues.some(
+      (issue) => issue.severity === "dropped" || issue.severity === "repaired",
+    );
     const recovered =
       migrated.applied.length > 0 ||
-      validationIssues.length > 0 ||
+      hasRepairsOrDrops ||
       migrated.fromFuture;
 
     return {

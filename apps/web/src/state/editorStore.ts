@@ -146,6 +146,8 @@ export interface EditorState {
   renameProject: (name: string) => void;
   /** Switches the project's output aspect ratio (and resolution). */
   setAspectRatio: (id: AspectRatioPreset, resolution: { width: number; height: number }) => void;
+  /** Cleans up action clips that reference non-existent desktop app instances. */
+  pruneOrphanedActions: () => void;
 
   undo: () => void;
   redo: () => void;
@@ -511,6 +513,52 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         `Aspect ratio ${id}`,
       ),
     ),
+
+  pruneOrphanedActions: () =>
+    set((state) => {
+      const appInstances = new Set<string>();
+      for (const clip of Object.values(state.project.entities.clips)) {
+        if (
+          clip.content.kind === "plugin" &&
+          clip.content.data &&
+          typeof clip.content.data === "object" &&
+          "instanceId" in clip.content.data &&
+          typeof (clip.content.data as Record<string, unknown>).instanceId === "string" &&
+          (clip.name === "app" || "appKind" in (clip.content.data as Record<string, unknown>))
+        ) {
+          appInstances.add((clip.content.data as Record<string, unknown>).instanceId as string);
+        }
+      }
+
+      const clips: Record<string, Clip> = {};
+      let prunedCount = 0;
+      for (const [id, clip] of Object.entries(state.project.entities.clips)) {
+        if (
+          clip.content.kind === "plugin" &&
+          clip.content.data &&
+          typeof clip.content.data === "object" &&
+          "instanceId" in clip.content.data &&
+          typeof (clip.content.data as Record<string, unknown>).instanceId === "string" &&
+          "action" in (clip.content.data as Record<string, unknown>) &&
+          !appInstances.has((clip.content.data as Record<string, unknown>).instanceId as string)
+        ) {
+          prunedCount++;
+          continue;
+        }
+        clips[id] = clip;
+      }
+
+      if (prunedCount === 0) return state;
+
+      return commit(
+        state,
+        withDerived({
+          ...state.project,
+          entities: { ...state.project.entities, clips },
+        }),
+        `Prune ${prunedCount} orphaned action${prunedCount === 1 ? "" : "s"}`,
+      );
+    }),
 
   endGesture: () => set((state) => ({ history: historySeal(state.history) })),
 

@@ -155,4 +155,27 @@ describe("restoreStoredProject", () => {
 
     expect(result.error).toContain("unreadable record");
   });
+
+  it("does not treat flagged issues as requiring recovery copy", () => {
+    const starter = createStarterProject();
+    // Remove the app clips but leave the action clips, which will cause flagged issues
+    const clipsWithoutApps = Object.fromEntries(
+      Object.entries(starter.entities.clips).filter(([_, clip]) => clip.content.kind !== "plugin" || (clip.content.data as any).instanceId === undefined || clip.name === "focus")
+    );
+    const stored = {
+      ...starter,
+      entities: {
+        ...starter.entities,
+        clips: clipsWithoutApps,
+      },
+    };
+
+    const result = restoreStoredProject(stored);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // It should have flagged issues, but NOT be marked as recovered (id is preserved)
+    expect(result.restored.recovered).toBe(false);
+    expect(result.restored.project.id).toBe(stored.id);
+  });
 });
