@@ -71,9 +71,15 @@ store and the web app passes the IndexedDB store from `useMediaImportContext().s
   uncompressed and compressed sizes from the ZIP central directory, and compares them with the
   manifest's `byteSize`. An entry that disagrees, that exceeds the per-asset or aggregate ceiling, or
   that is compressed past a practical ratio is rejected without inflating it; `manifest.json` and
-  `project.json` are bounded too. The ceilings are `DEFAULT_ARCHIVE_LIMITS` in `archive.ts` (4 GiB per
-  asset, 16 GiB in total, 200:1, 64 MiB per metadata file) and can be lowered per import through
-  `ArchiveImportOptions.limits`.
+  `project.json` are bounded too. The ceilings are `DEFAULT_ARCHIVE_LIMITS` in `archive.ts` (512 MiB
+  per asset, 2 GiB in total, 200:1 above a 1 MiB floor, 64 MiB per metadata file) and can be raised or
+  lowered per import through `ArchiveImportOptions.limits`. They bound *declared output*, not the
+  memory the decode retains: import holds every staged blob until the write phase, so the aggregate
+  number is the one sized for a browser tab.
+- **The manifest is authoritative and bound to the id.** Each bundled asset's recorded `archivePath`
+  must name that asset's own entry — the path this build writes, or the equivalent path an older build
+  wrote. A manifest that points an asset at another entry is rejected rather than resolving by id, so
+  one asset's bytes can never silently stand in for another's.
 
 The UI side lives in `apps/web/src/features/project/`:
 
