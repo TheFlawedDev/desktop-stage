@@ -1,7 +1,100 @@
 # Development
 
+## Repository layout
+
+A pnpm workspace. The dependency rule is downward-only; a cycle between layers is a bug, not a
+style preference. See [`cutaway-architecture.md`](cutaway-architecture.md) for the reasoning.
+
+| Path | What lives there |
+| --- | --- |
+| `apps/web` | The Next.js editor application. React only; business logic belongs in `packages/*`. |
+| `packages/types` | The project document: entities, clip payloads, and the Desktop Stage payload families. |
+| `packages/utils`, `packages/*-engine` | Pure domain and engine logic. No React, no DOM, runnable in Node. |
+| `packages/project-io` | Parsing, validation, migration, and the `.desktopstage` archive. Storage is injected. |
+| `packages/media-engine` | The `MediaBlobStore` interface and its IndexedDB implementation. |
+| `packages/desktop-engine` | The Desktop Stage extension: versioned payloads, the version 1 converter, and the frame resolver preview and export share. |
+| `outputs/` | Plans and notes kept with the repository. Not build input. |
+
+## Commands
+
+Run from the repository root; they behave the same on Windows, macOS, and Linux.
+
+```sh
+pnpm install     # link the workspace
+pnpm dev         # Next.js dev server (http://localhost:3000)
+pnpm test        # Vitest over every package and the web app
+pnpm typecheck   # tsc --noEmit across the workspace
+pnpm build       # production build
+pnpm format      # Prettier
+```
+
+Individual packages still have their own scripts, e.g. `pnpm --filter @cutaway/project-io test`.
+
+The root `pnpm test` runs one Vitest process with thread workers rather than a process per package:
+workspace packages ship raw TypeScript, so the aliases in `vitest.config.ts` point the runner at the
+sources and no build step is needed first.
+
+## The portable `.desktopstage` archive
+
+The JSON project format stores *references* to media bytes in IndexedDB. A JSON download therefore
+cannot move a media-rich project to another computer — the file travels, the footage does not. The
+archive closes that gap:
+
+```
+manifest.json        what is inside, and the format version
+project.json         the project document (the same parser as a JSON file)
+assets/<media-id>    the original bytes of every bundled media file
+```
+
+It is a plain ZIP: it streams, and a creator can recover their footage from it by hand with tools
+every operating system already has. Assets are stored uncompressed (`level: 0`) because media is
+already compressed.
+
+The implementation is `packages/project-io/src/archive.ts`, and it is deliberately storage-agnostic:
+it takes the three-method `ArchiveBlobStore` slice as a parameter, so its tests use an in-memory
+store and the web app passes the IndexedDB store from `useMediaImportContext().store()`.
+
+### Why the order of operations matters
+
+- **Export** reads every referenced source blob *before* writing a byte. An export that cannot be
+  complete fails immediately with the list of what is missing, instead of producing a half-archive
+  that would import with silent gaps.
+- **Import** validates the archive, reads every referenced asset, stages the blobs under fresh keys,
+  remaps `MediaAsset.source.key`, and only then hands back a document. A failure at any point deletes
+  whatever it staged. The caller replaces the open project last, so a corrupt archive, a missing
+  asset, or a full disk changes nothing.
+- **Bundled vs. linked media.** Assets backed by a remote URL or a file handle are recorded in the
+  manifest as unbundled rather than silently dropped, and the UI says how many did not travel.
+- **Caches are not shipped.** Thumbnails and waveforms are rebuilt from the source bytes after
+  import.
+
+The UI side lives in `apps/web/src/features/project/`:
+
+| File | Responsibility |
+| --- | --- |
+| `projectFiles.ts` | Pure decisions: which reader a file goes to, how a failure reads, how big it is, how far along it is |
+| `useProjectPersistence.ts` | Autosave, restore, and the archive/JSON open and export flows |
+| `downloadBlob.ts` | The anchor-based download, including object-URL revocation |
+| `ArchiveStatusBanner.tsx` | Packing/unpacking progress and the outcome, including the failure details |
+
+### File-kind dispatch
+
+`classifyProjectFile` decides between the archive reader and the JSON reader from the file's
+extension and MIME type first, and from its leading bytes only when both say nothing. The precedence
+is deliberate and load-bearing: a file named `.desktopstage` whose contents are corrupt must be
+reported as a broken archive, never handed to the forgiving JSON parser, which could otherwise
+"repair" it into a plausible-looking empty project and replace what the user had open. The mirror
+case holds too — a `.json` file is never fed to the ZIP reader.
+
+Adding a new project extension means adding it to `ARCHIVE_EXTENSIONS` or `JSON_EXTENSIONS` in
+`projectFiles.ts`, and covering it in `projectFiles.test.ts`.
+
 ## Web bundler on Windows
 
-`apps/web` runs Next.js with the webpack bundler (`next dev --webpack`, `next build --webpack`) rather than the default Turbopack. On Windows, Turbopack currently fails to resolve the `@cutaway/*` workspace packages from this monorepo, reporting dozens of module-resolution errors, while webpack compiles, typechecks, and static-exports the same sources successfully.
+`apps/web` runs Next.js with the webpack bundler (`next dev --webpack`, `next build --webpack`)
+rather than the default Turbopack. On Windows, Turbopack currently fails to resolve the `@cutaway/*`
+workspace packages from this monorepo, reporting dozens of module-resolution errors, while webpack
+compiles, typechecks, and static-exports the same sources successfully.
 
-This is a Windows tooling workaround, not a product constraint. Remove the `--webpack` flags from `apps/web/package.json` once Turbopack resolves these workspace packages correctly.
+This is a Windows tooling workaround, not a product constraint. Remove the `--webpack` flags from
+`apps/web/package.json` once Turbopack resolves these workspace packages correctly.
