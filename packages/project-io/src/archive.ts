@@ -729,6 +729,9 @@ export async function importProjectArchive(
     const manifestById = new Map<string, ArchiveAssetEntry>(
       manifest.assets.map((asset) => [asset.mediaId, asset]),
     );
+    // Object spread copies own enumerable properties only, so an own
+    // `"__proto__"` key that survived validation is copied as an own key, not
+    // applied as a prototype.
     const media = { ...parsed.project.entities.media };
     const problems: string[] = [];
     const plans: PlannedAssetRead[] = [];
