@@ -499,6 +499,40 @@ describe("validateProject repair", () => {
     });
     expect(shapes.issues.some((i) => /shape kind/i.test(i.message))).toBe(true);
   });
+
+  it("keeps fields written by a newer build instead of stripping them", () => {
+    const project = populatedProject();
+    const clipId = Object.keys(project.entities.clips)[0]!;
+    const trackId = project.trackOrder[0]!;
+
+    const fromNewerBuild = {
+      ...project,
+      entities: {
+        ...project.entities,
+        media: {
+          m1: { futureAssetField: 7, ...project.entities.media.m1! },
+        },
+        tracks: {
+          [trackId]: { futureTrackField: "keep", ...project.entities.tracks[trackId]! },
+        },
+        clips: {
+          [clipId]: { futureClipField: { nested: true }, ...project.entities.clips[clipId]! },
+        },
+      },
+    };
+
+    const result = parseProjectFile(serializeProject(fromNewerBuild as ProjectDocument));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const clip = result.project.entities.clips[clipId] as unknown as Record<string, unknown>;
+    const track = result.project.entities.tracks[trackId] as unknown as Record<string, unknown>;
+    const asset = result.project.entities.media.m1 as unknown as Record<string, unknown>;
+    expect(clip.futureClipField).toEqual({ nested: true });
+    expect(track.futureTrackField).toBe("keep");
+    expect(asset.futureAssetField).toBe(7);
+  });
 });
 
 describe("validateProject totality on malformed JSON", () => {

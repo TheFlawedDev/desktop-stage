@@ -316,7 +316,11 @@ function validateTracks(
 
     const base = createTrack({ kind, index: asFiniteNumber(value.index, 0) });
 
+    // Unknown fields written by a newer build or a plugin are carried through
+    // rather than stripped, so a forward-schema project is not quietly
+    // downgraded on the next autosave.
     setOwn(tracks, id, {
+      ...value,
       ...base,
       id: value.id,
       name: asString(value.name, base.name),
@@ -376,6 +380,7 @@ function validateMedia(raw: unknown, issues: ValidationIssue[]): Record<string, 
     }
 
     setOwn(media, id, {
+      ...value,
       id: value.id,
       name: asString(value.name, id),
       kind,
@@ -489,6 +494,7 @@ function validateMarkers(raw: unknown, issues: ValidationIssue[]): Record<string
     }
 
     setOwn(markers, id, {
+      ...value,
       id: value.id,
       frame: asFiniteNumber(value.frame, 0),
       label: asString(value.label, ""),
@@ -543,6 +549,7 @@ function validateCaptionTracks(
     }
 
     setOwn(tracks, id, {
+      ...value,
       id: value.id,
       sourceMediaId,
       language: asString(value.language, "en"),
@@ -1607,7 +1614,10 @@ function sanitizeClip(
     content,
   });
 
+  // `...raw` first: fields this build does not know are carried through rather
+  // than erased, so opening a project from a newer build does not strip it.
   return {
+    ...raw,
     ...base,
     name: asString(raw.name, base.name),
     trackId,
