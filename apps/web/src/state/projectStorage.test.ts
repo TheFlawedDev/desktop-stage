@@ -12,7 +12,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createProject } from "@cutaway/utils";
 import type { ProjectDocument } from "@cutaway/types";
-import { createFakeIndexedDb, type FakeIndexedDb } from "../../../../packages/media-engine/src/__tests__/fakeIndexedDb";
+import {
+  createFakeIndexedDb,
+  type FakeIndexedDb,
+} from "../../../../packages/media-engine/src/__tests__/fakeIndexedDb";
 
 function project(id: string, name: string): ProjectDocument {
   return { ...createProject(name), id };
@@ -63,16 +66,42 @@ describe("projectStorage", () => {
     await expect(storage.listProjects()).rejects.toThrow("VersionError");
 
     await storage.saveProject(project("p1", "First"));
-    expect((await storage.listProjects()).map((entry) => entry.id)).toEqual(["p1"]);
+    expect((await storage.listProjects()).map((entry) => entry.id)).toEqual([
+      "p1",
+    ]);
   });
 
   it("retries after a blocked open instead of caching the rejection", async () => {
     fake.blockNextOpen();
 
-    await expect(storage.saveProject(project("p1", "First"))).rejects.toThrow(/another tab/i);
+    await expect(storage.saveProject(project("p1", "First"))).rejects.toThrow(
+      /another tab/i,
+    );
 
     await storage.saveProject(project("p1", "First"));
     expect(await storage.loadProject("p1")).not.toBeNull();
+  });
+
+  it("closes an abandoned open that succeeds late", async () => {
+    // An IDBOpenDBRequest cannot be cancelled, so a blocked open is abandoned
+    // while still queued. If the blocking connection later goes away it fires
+    // `success` anyway; that connection must be closed, not leaked, or it holds
+    // the database open against another tab's upgrade forever.
+    fake.blockNextOpen();
+
+    await expect(storage.saveProject(project("p1", "First"))).rejects.toThrow(
+      /another tab/i,
+    );
+
+    await fake.releaseBlockedOpen();
+
+    // The retry's own connection is closed first, so a non-zero count here can
+    // only be the abandoned request's connection.
+    fake.triggerVersionChange();
+    expect(fake.triggerVersionChange()).toBe(0);
+
+    await storage.saveProject(project("p2", "Second"));
+    expect((await storage.loadProject("p2"))?.name).toBe("Second");
   });
 
   it("returns the most recently saved project first", async () => {
@@ -90,6 +119,8 @@ describe("projectStorage", () => {
 
     fake.triggerVersionChange();
 
-    expect((await storage.listProjects()).map((entry) => entry.id)).toEqual(["p1"]);
+    expect((await storage.listProjects()).map((entry) => entry.id)).toEqual([
+      "p1",
+    ]);
   });
 });

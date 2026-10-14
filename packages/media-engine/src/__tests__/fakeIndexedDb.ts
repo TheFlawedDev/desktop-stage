@@ -11,8 +11,16 @@
  * express.
  *
  * It also exposes the failure switches the real implementation cannot be asked
- * for on demand: abort before the request runs, abort at commit, a blocked open,
- * a failed open, and a `versionchange` from another tab.
+ * for on demand: abort before the request runs, abort at commit, a blocked open
+ * (and the late `success` that follows once the blocker goes away), a failed
+ * open, and a `versionchange` from another tab.
+ *
+ * What it deliberately does not model, so nobody trusts it further than it
+ * goes: `onclose` is declared but never fired (the stores rely on the next
+ * `transaction` call to notice an abnormal close), `put`/`get` do not
+ * structured-clone, `getAll` returns insertion order rather than key order, and
+ * there is one connection object per database name, so "two tabs" cannot be
+ * expressed directly — `triggerVersionChange` is the stand-in for the other tab.
  */
 
 type Handler = (() => void) | null;
@@ -62,7 +70,9 @@ class FakeObjectStore {
       if (typeof key === "string" || typeof key === "number") return key;
     }
 
-    throw new Error("A key is required for an object store without a key path.");
+    throw new Error(
+      "A key is required for an object store without a key path.",
+    );
   }
 
   put(value: unknown, key?: IDBValidKey): FakeRequest<IDBValidKey> {
@@ -207,25 +217,44 @@ class FakeDatabase {
     readonly name: string,
     public version: number,
     private readonly controls: TransactionControls,
+    /** Live connections for this database, so `close` can deregister itself. */
+    private readonly connections: Set<FakeDatabase>,
   ) {}
 
   createObjectStore(name: string, options?: { keyPath?: string }): void {
-    this.stores.set(name, { keyPath: options?.keyPath ?? null, records: new Map() });
+    this.stores.set(name, {
+      keyPath: options?.keyPath ?? null,
+      records: new Map(),
+    });
   }
 
-  transaction(name: string, mode: IDBTransactionMode = "readonly"): FakeTransaction {
+  transaction(
+    name: string,
+    mode: IDBTransactionMode = "readonly",
+  ): FakeTransaction {
     if (this.closed) {
-      throw new DOMException("The database connection is closed.", "InvalidStateError");
+      throw new DOMException(
+        "The database connection is closed.",
+        "InvalidStateError",
+      );
     }
 
     const data = this.stores.get(name);
-    if (!data) throw new DOMException(`No object store named "${name}".`, "NotFoundError");
+    if (!data)
+      throw new DOMException(
+        `No object store named "${name}".`,
+        "NotFoundError",
+      );
 
     return new FakeTransaction(data, mode, this.controls);
   }
 
   close(): void {
     this.closed = true;
+    // A real close deregisters the connection. Keeping it here would make
+    // `triggerVersionChange` fire on an already-closed connection, which would
+    // hide a store that forgot to drop its cached handle.
+    this.connections.delete(this);
   }
 
   /**
@@ -238,6 +267,7 @@ class FakeDatabase {
    */
   connect(): void {
     this.closed = false;
+    this.connections.add(this);
   }
 }
 
@@ -250,10 +280,18 @@ export interface FakeIndexedDb {
   abortNextTransaction(error?: Error): void;
   /** Make the next `open` fire `blocked` and never settle. */
   blockNextOpen(): void;
+  /**
+   * Settle the open that `blockNextOpen` left pending, as the real request does
+   * once the blocking connection goes away. Resolves after `onsuccess` ran.
+   */
+  releaseBlockedOpen(): Promise<void>;
   /** Make the next `open` reject. */
   failNextOpen(error?: Error): void;
-  /** Fire `versionchange` on every open connection, as another tab would. */
-  triggerVersionChange(): void;
+  /**
+   * Fire `versionchange` on every open connection, as another tab would.
+   * Returns how many were still open.
+   */
+  triggerVersionChange(): number;
   /** Installs as `globalThis.indexedDB`; returns a restore function. */
   install(): () => void;
 }
@@ -266,6 +304,12 @@ export function createFakeIndexedDb(): FakeIndexedDb {
   let abortAtCommit: Error | null = null;
   let blockNextOpenFlag = false;
   let failNextOpenError: Error | null = null;
+  /** The open left pending by `blockNextOpen`, with what it was opening. */
+  let blockedOpen: {
+    request: FakeOpenRequest;
+    name: string;
+    target: number;
+  } | null = null;
 
   const controls: TransactionControls = {
     takeAbortBeforeRequest: () => {
@@ -280,6 +324,42 @@ export function createFakeIndexedDb(): FakeIndexedDb {
     },
   };
 
+  /**
+   * Creates or reopens the database and settles `request`.
+   *
+   * Shared between the immediate open path and `releaseBlockedOpen` so a
+   * connection that only arrives later is created, upgraded, and registered
+   * exactly like one that arrived on time.
+   */
+  const settleOpen = (
+    request: FakeOpenRequest,
+    name: string,
+    target: number,
+  ): FakeDatabase => {
+    let database = databases.get(name);
+    // `onupgradeneeded` runs for a new database or a version bump, which is when
+    // the module's handler creates its object store.
+    const needsUpgrade = !database || target > database.version;
+
+    if (!database) {
+      database = new FakeDatabase(name, target, controls, connections);
+      databases.set(name, database);
+    } else {
+      database.version = target;
+    }
+
+    if (needsUpgrade) {
+      request.result = database;
+      request.onupgradeneeded?.();
+    }
+
+    database.connect();
+    request.result = database;
+    request.onsuccess?.();
+
+    return database;
+  };
+
   const factory = {
     open(name: string, version?: number): IDBOpenDBRequest {
       const request = new FakeOpenRequest();
@@ -289,7 +369,9 @@ export function createFakeIndexedDb(): FakeIndexedDb {
         if (blockNextOpenFlag) {
           blockNextOpenFlag = false;
           // A real blocked upgrade stays pending until the blocking connection
-          // goes away, so the request is deliberately left unsettled.
+          // goes away, so the request is deliberately left unsettled — and
+          // remembered, so a test can make it succeed later.
+          blockedOpen = { request, name, target };
           request.onblocked?.();
           return;
         }
@@ -302,27 +384,7 @@ export function createFakeIndexedDb(): FakeIndexedDb {
           return;
         }
 
-        let database = databases.get(name);
-        // `onupgradeneeded` runs for a new database or a version bump, which is
-        // when the module's handler creates its object store.
-        const needsUpgrade = !database || target > database.version;
-
-        if (!database) {
-          database = new FakeDatabase(name, target, controls);
-          databases.set(name, database);
-        } else {
-          database.version = target;
-        }
-
-        if (needsUpgrade) {
-          request.result = database;
-          request.onupgradeneeded?.();
-        }
-
-        database.connect();
-        connections.add(database);
-        request.result = database;
-        request.onsuccess?.();
+        settleOpen(request, name, target);
       });
 
       return request as unknown as IDBOpenDBRequest;
@@ -333,7 +395,9 @@ export function createFakeIndexedDb(): FakeIndexedDb {
 
   return {
     factory: asFactory,
-    abortNextCommit: (error = new DOMException("Quota exceeded.", "QuotaExceededError")) => {
+    abortNextCommit: (
+      error = new DOMException("Quota exceeded.", "QuotaExceededError"),
+    ) => {
       abortAtCommit = error;
     },
     abortNextTransaction: (error = abortError()) => {
@@ -342,12 +406,29 @@ export function createFakeIndexedDb(): FakeIndexedDb {
     blockNextOpen: () => {
       blockNextOpenFlag = true;
     },
-    failNextOpen: (error = new DOMException("Version error.", "VersionError")) => {
+    releaseBlockedOpen: async () => {
+      const pending = blockedOpen;
+      if (!pending) {
+        throw new Error(
+          "No blocked open is waiting; call blockNextOpen() first.",
+        );
+      }
+
+      blockedOpen = null;
+      settleOpen(pending.request, pending.name, pending.target);
+      // Let the promise callbacks that `onsuccess` scheduled run before the
+      // caller asserts on their effects.
+      await Promise.resolve();
+    },
+    failNextOpen: (
+      error = new DOMException("Version error.", "VersionError"),
+    ) => {
       failNextOpenError = error;
     },
     triggerVersionChange: () => {
-      for (const database of connections) database.onversionchange?.();
-      connections.clear();
+      const open = [...connections];
+      for (const database of open) database.onversionchange?.();
+      return open.length;
     },
     install: () => {
       const globals = globalThis as { indexedDB?: unknown };

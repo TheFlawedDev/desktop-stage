@@ -87,6 +87,27 @@ describe("IndexedDBMediaStore", () => {
     expect(await store.keys()).toEqual(["a"]);
   });
 
+  it("closes an abandoned open that succeeds late", async () => {
+    // The request cannot be cancelled, so the blocked open is abandoned while
+    // still queued. The late `success` hands back a connection nobody caches;
+    // leaving it open would block another tab's upgrade for the tab's lifetime.
+    fake.blockNextOpen();
+
+    await expect(store.put("a", new Blob(["hello"]))).rejects.toThrow(
+      /another tab/i,
+    );
+
+    await fake.releaseBlockedOpen();
+
+    // The retry's connection is closed first, so a non-zero count can only be
+    // the abandoned request's connection.
+    fake.triggerVersionChange();
+    expect(fake.triggerVersionChange()).toBe(0);
+
+    await store.put("b", new Blob(["world"]));
+    expect(await store.keys()).toEqual(["b"]);
+  });
+
   it("retries after a failed open instead of caching the rejection", async () => {
     fake.failNextOpen(new Error("VersionError"));
 

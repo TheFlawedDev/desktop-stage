@@ -46,6 +46,17 @@ function createDatabasePromise(): Promise<IDBDatabase> {
   const pending = new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
 
+    /**
+     * Set when this open was reported as blocked.
+     *
+     * An `IDBOpenDBRequest` cannot be cancelled, so a blocked open is abandoned
+     * while it is still queued: if the blocking connection later goes away the
+     * request still fires `success`, handing back a connection nobody caches.
+     * The flag is how that late success is recognized and closed instead of
+     * leaked.
+     */
+    let abandoned = false;
+
     request.onupgradeneeded = () => {
       const database = request.result;
       if (!database.objectStoreNames.contains(PROJECT_STORE)) {
@@ -55,15 +66,31 @@ function createDatabasePromise(): Promise<IDBDatabase> {
 
     // Fires when another connection holds an older version open. Without a
     // handler the open never settles and the status bar says "Saving…" forever.
-    request.onblocked = () => reject(new Error(OPEN_BLOCKED_MESSAGE));
+    request.onblocked = () => {
+      abandoned = true;
+      reject(new Error(OPEN_BLOCKED_MESSAGE));
+    };
     request.onerror = () =>
-      reject(request.error ?? new Error("Project storage could not be opened."));
+      reject(
+        request.error ?? new Error("Project storage could not be opened."),
+      );
     request.onsuccess = () => {
       const database = request.result;
 
+      if (abandoned) {
+        // The caller was already told the open failed, so this connection is
+        // unreachable. Closing it is what keeps a late success from holding the
+        // database open against another tab's upgrade for the tab's lifetime.
+        database.close();
+        return;
+      }
+
       // Another tab upgrading or deleting the database closes this connection.
       // Drop the cached handle so the next operation reopens instead of failing
-      // with `InvalidStateError` for the life of the tab.
+      // with `InvalidStateError` for the life of the tab. `onclose` is delivered
+      // through the same path: an abnormal close leaves the cached promise
+      // pointing at a dead connection, and the next `transaction` call both
+      // clears it and rejects.
       database.onversionchange = () => {
         database.close();
         databasePromise = null;
@@ -125,14 +152,20 @@ function runTransaction<T>(
           result = request.result;
           hasResult = true;
         };
-        request.onerror = () => reject(request.error ?? new Error("The storage request failed."));
+        request.onerror = () =>
+          reject(request.error ?? new Error("The storage request failed."));
 
         tx.oncomplete = () => {
           if (hasResult) resolve(result as T);
-          else reject(new Error("The storage transaction completed without a result."));
+          else
+            reject(
+              new Error("The storage transaction completed without a result."),
+            );
         };
-        tx.onabort = () => reject(tx.error ?? new Error("The storage transaction was aborted."));
-        tx.onerror = () => reject(tx.error ?? new Error("The storage transaction failed."));
+        tx.onabort = () =>
+          reject(tx.error ?? new Error("The storage transaction was aborted."));
+        tx.onerror = () =>
+          reject(tx.error ?? new Error("The storage transaction failed."));
       }),
   );
 }
@@ -151,14 +184,17 @@ export async function saveProject(project: ProjectDocument): Promise<void> {
 }
 
 export async function loadProject(id: Id): Promise<StoredProject | null> {
-  const result = await runTransaction<StoredProject | undefined>("readonly", (store) =>
-    store.get(id),
+  const result = await runTransaction<StoredProject | undefined>(
+    "readonly",
+    (store) => store.get(id),
   );
   return result ?? null;
 }
 
 export async function listProjects(): Promise<StoredProject[]> {
-  const all = await runTransaction<StoredProject[]>("readonly", (store) => store.getAll());
+  const all = await runTransaction<StoredProject[]>("readonly", (store) =>
+    store.getAll(),
+  );
   return all.sort((a, b) => b.savedAt - a.savedAt);
 }
 

@@ -43,6 +43,17 @@ export class IndexedDBMediaStore implements MediaBlobStore {
     const pending = new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
 
+      /**
+       * Set when this open was reported as blocked.
+       *
+       * An `IDBOpenDBRequest` cannot be cancelled, so a blocked open is
+       * abandoned while it is still queued: if the blocking connection later
+       * goes away the request still fires `success`, handing back a connection
+       * nobody caches. The flag is how that late success is recognized and
+       * closed instead of leaked.
+       */
+      let abandoned = false;
+
       request.onupgradeneeded = () => {
         const database = request.result;
         if (!database.objectStoreNames.contains(BLOB_STORE)) {
@@ -50,14 +61,32 @@ export class IndexedDBMediaStore implements MediaBlobStore {
         }
       };
 
-      request.onblocked = () => reject(new Error(OPEN_BLOCKED_MESSAGE));
-      request.onerror = () => reject(request.error ?? new Error("Media storage could not be opened."));
+      request.onblocked = () => {
+        abandoned = true;
+        reject(new Error(OPEN_BLOCKED_MESSAGE));
+      };
+      request.onerror = () =>
+        reject(
+          request.error ?? new Error("Media storage could not be opened."),
+        );
       request.onsuccess = () => {
         const database = request.result;
+
+        if (abandoned) {
+          // The caller was already told the open failed, so this connection is
+          // unreachable. Closing it is what keeps a late success from holding
+          // the database open against another tab's upgrade for the tab's
+          // lifetime.
+          database.close();
+          return;
+        }
 
         // Another tab upgrading or deleting the database closes this
         // connection. Drop the cached handle so the next operation reopens
         // instead of failing with `InvalidStateError` for the life of the tab.
+        // An abnormal `close` needs no separate handler: the cached promise is
+        // still cleared by the next `transaction` call, which is also where the
+        // failure is reported.
         database.onversionchange = () => {
           database.close();
           this.databasePromise = null;
@@ -120,14 +149,20 @@ export class IndexedDBMediaStore implements MediaBlobStore {
         result = request.result;
         hasResult = true;
       };
-      request.onerror = () => reject(request.error ?? new Error("The storage request failed."));
+      request.onerror = () =>
+        reject(request.error ?? new Error("The storage request failed."));
 
       tx.oncomplete = () => {
         if (hasResult) resolve(result as T);
-        else reject(new Error("The storage transaction completed without a result."));
+        else
+          reject(
+            new Error("The storage transaction completed without a result."),
+          );
       };
-      tx.onabort = () => reject(tx.error ?? new Error("The storage transaction was aborted."));
-      tx.onerror = () => reject(tx.error ?? new Error("The storage transaction failed."));
+      tx.onabort = () =>
+        reject(tx.error ?? new Error("The storage transaction was aborted."));
+      tx.onerror = () =>
+        reject(tx.error ?? new Error("The storage transaction failed."));
     });
   }
 
@@ -136,7 +171,10 @@ export class IndexedDBMediaStore implements MediaBlobStore {
   }
 
   async get(key: string): Promise<Blob | null> {
-    const result = await this.transaction<Blob | undefined>("readonly", (store) => store.get(key));
+    const result = await this.transaction<Blob | undefined>(
+      "readonly",
+      (store) => store.get(key),
+    );
     return result ?? null;
   }
 
@@ -145,7 +183,9 @@ export class IndexedDBMediaStore implements MediaBlobStore {
   }
 
   async keys(): Promise<string[]> {
-    const result = await this.transaction<IDBValidKey[]>("readonly", (store) => store.getAllKeys());
+    const result = await this.transaction<IDBValidKey[]>("readonly", (store) =>
+      store.getAllKeys(),
+    );
     return result.map(String);
   }
 
@@ -181,5 +221,7 @@ export class MemoryMediaStore implements MediaBlobStore {
 
 /** Returns the appropriate store for the current environment. */
 export function createMediaStore(): MediaBlobStore {
-  return typeof indexedDB === "undefined" ? new MemoryMediaStore() : new IndexedDBMediaStore();
+  return typeof indexedDB === "undefined"
+    ? new MemoryMediaStore()
+    : new IndexedDBMediaStore();
 }
