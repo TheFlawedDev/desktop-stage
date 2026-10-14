@@ -13,12 +13,16 @@ import {
   Square,
   Layers,
   Sparkles,
+  Bug,
 } from "lucide-react";
 import { IconButton } from "@cutaway/ui";
 import { formatTimecode } from "@cutaway/timeline-engine";
 import { importFile } from "@cutaway/media-engine";
 import type { StageTakeManifest, Rect } from "@cutaway/types";
-import { MouseFollowCamera } from "@desktop-stage/desktop-engine";
+import {
+  MouseFollowCamera,
+  stageDiagnostics,
+} from "@desktop-stage/desktop-engine";
 import { useEditorStore } from "@/state/editorStore";
 import { useMediaImportContext } from "@/features/media/MediaImportProvider";
 import { PreviewStage } from "@/features/preview/PreviewStage";
@@ -28,6 +32,7 @@ import {
   InteractiveStage,
   type InteractiveStageHandle,
 } from "@/features/stage-studio/InteractiveStage";
+import { StageDebugHUD } from "@/features/stage-studio/StageDebugHUD";
 
 /**
  * Workspace surface with interactive virtual desktop and playback preview.
@@ -40,15 +45,23 @@ export function PreviewPanel() {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<InteractiveStageHandle>(null);
   const [showGuides, setShowGuides] = useState(true);
-  const [workspaceMode, setWorkspaceMode] = useState<"interactive" | "preview">("interactive");
+  const [workspaceMode, setWorkspaceMode] = useState<"interactive" | "preview">(
+    "interactive",
+  );
 
-  const resolution = useEditorStore((state) => state.project.settings.resolution);
-  const background = useEditorStore((state) => state.project.settings.backgroundColor);
+  const resolution = useEditorStore(
+    (state) => state.project.settings.resolution,
+  );
+  const background = useEditorStore(
+    (state) => state.project.settings.backgroundColor,
+  );
   const playhead = useEditorStore((state) => state.playhead);
   const duration = useEditorStore((state) => state.project.durationFrames);
   const fps = useEditorStore((state) => state.project.settings.frameRate);
   const isPlaying = useEditorStore((state) => state.isPlaying);
-  const isEmpty = useEditorStore((state) => Object.keys(state.project.entities.clips).length === 0);
+  const isEmpty = useEditorStore(
+    (state) => Object.keys(state.project.entities.clips).length === 0,
+  );
 
   const togglePlaying = useEditorStore((state) => state.togglePlaying);
   const setPlayhead = useEditorStore((state) => state.setPlayhead);
@@ -58,11 +71,19 @@ export function PreviewPanel() {
   const { store } = useMediaImportContext();
 
   // Recording UI state
-  const [recordingMode, setRecordingMode] = useState<"full" | "selected-area">("full");
+  const [recordingMode, setRecordingMode] = useState<"full" | "selected-area">(
+    "full",
+  );
   const [isRecording, setIsRecording] = useState(false);
   const [recordDuration, setRecordDuration] = useState(0);
-  const [selectedCrop, setSelectedCrop] = useState<Rect>({ x: 140, y: 90, width: 800, height: 500 });
+  const [selectedCrop, setSelectedCrop] = useState<Rect>({
+    x: 140,
+    y: 90,
+    width: 800,
+    height: 500,
+  });
   const [takeNotice, setTakeNotice] = useState<string | null>(null);
+  const [showDebugHud, setShowDebugHud] = useState(false);
 
   // Take review and 1.5x mouse follow camera
   const [lastTake, setLastTake] = useState<StageTakeManifest | null>(null);
@@ -82,20 +103,28 @@ export function PreviewPanel() {
     return { width, height: width / projectAspect };
   })();
 
-  const handleRecordingStatusChange = useCallback((rec: boolean, dur: number) => {
-    setIsRecording(rec);
-    setRecordDuration(dur);
-  }, []);
+  const handleRecordingStatusChange = useCallback(
+    (rec: boolean, dur: number) => {
+      setIsRecording(rec);
+      setRecordDuration(dur);
+    },
+    [],
+  );
 
   const handleStartRecording = () => {
+    stageDiagnostics.log(
+      "UI",
+      `User initiated recording in mode: ${recordingMode}`,
+    );
     stageRef.current?.startRecording(
       recordingMode,
-      recordingMode === "selected-area" ? selectedCrop : undefined
+      recordingMode === "selected-area" ? selectedCrop : undefined,
     );
   };
 
   const handleStopRecording = async () => {
     if (!stageRef.current) return;
+    stageDiagnostics.log("UI", "User stopped recording");
     try {
       const { blob, manifest } = await stageRef.current.stopRecording();
       await handleTakeRecorded(blob, manifest);
@@ -104,7 +133,10 @@ export function PreviewPanel() {
     }
   };
 
-  const handleTakeRecorded = async (videoBlob: Blob, manifest: StageTakeManifest) => {
+  const handleTakeRecorded = async (
+    videoBlob: Blob,
+    manifest: StageTakeManifest,
+  ) => {
     try {
       const takeFile = new File([videoBlob], `stage-take-${Date.now()}.webm`, {
         type: "video/webm",
@@ -123,7 +155,9 @@ export function PreviewPanel() {
       setTrackMouseEnabled(true);
       setPreviewScrubMs(0);
 
-      setTakeNotice(`Take recorded (${(manifest.durationMs / 1000).toFixed(1)}s) & 1.5× mouse follow enabled!`);
+      setTakeNotice(
+        `Take recorded (${(manifest.durationMs / 1000).toFixed(1)}s) & 1.5× mouse follow enabled!`,
+      );
       setTimeout(() => setTakeNotice(null), 5000);
 
       // Auto-switch to preview mode with playhead at start of new clip
@@ -146,12 +180,20 @@ export function PreviewPanel() {
         lastTake.pointerEvents,
         currentMs,
         lastTake.recordingRect,
-        1.5
+        1.5,
       );
     } catch {
       return null;
     }
-  }, [camera, lastTake, trackMouseEnabled, workspaceMode, previewScrubMs, playhead, fps]);
+  }, [
+    camera,
+    lastTake,
+    trackMouseEnabled,
+    workspaceMode,
+    previewScrubMs,
+    playhead,
+    fps,
+  ]);
 
   return (
     <div className="bg-surface-base flex h-full flex-col">
@@ -174,22 +216,40 @@ export function PreviewPanel() {
                   ? (() => {
                       const baseW = lastTake?.recordingRect.width || 1280;
                       const baseH = lastTake?.recordingRect.height || 720;
-                      const vpCenterX = cameraView.viewport.x + cameraView.viewport.width / 2;
-                      const vpCenterY = cameraView.viewport.y + cameraView.viewport.height / 2;
-                      const dxPercent = ((baseW / 2 - vpCenterX) / baseW) * 100;
-                      const dyPercent = ((baseH / 2 - vpCenterY) / baseH) * 100;
+                      const vpCenterX =
+                        cameraView.viewport.x + cameraView.viewport.width / 2;
+                      const vpCenterY =
+                        cameraView.viewport.y + cameraView.viewport.height / 2;
+                      const rawDx = ((baseW / 2 - vpCenterX) / baseW) * 100;
+                      const rawDy = ((baseH / 2 - vpCenterY) / baseH) * 100;
+
+                      // Prevent camera from panning outside stage boundary
+                      const maxShiftX =
+                        ((cameraView.zoom - 1) / (2 * cameraView.zoom)) * 100;
+                      const maxShiftY =
+                        ((cameraView.zoom - 1) / (2 * cameraView.zoom)) * 100;
+                      const clampedDx = Math.max(
+                        -maxShiftX,
+                        Math.min(maxShiftX, rawDx),
+                      );
+                      const clampedDy = Math.max(
+                        -maxShiftY,
+                        Math.min(maxShiftY, rawDy),
+                      );
 
                       return {
-                        transform: `scale(${cameraView.zoom}) translate(${dxPercent}%, ${dyPercent}%)`,
+                        transform: `scale(${cameraView.zoom}) translate(${clampedDx}%, ${clampedDy}%)`,
                         transformOrigin: "center center",
-                        transition: isPlaying ? "none" : "transform 0.08s ease-out",
+                        transition: isPlaying
+                          ? "none"
+                          : "transform 0.08s ease-out",
                       };
                     })()
                   : undefined
               }
             >
-              {stageSize.width > 0 && (
-                workspaceMode === "interactive" ? (
+              {stageSize.width > 0 &&
+                (workspaceMode === "interactive" ? (
                   <InteractiveStage
                     ref={stageRef}
                     width={stageSize.width}
@@ -198,11 +258,15 @@ export function PreviewPanel() {
                     onRecordingStatusChange={handleRecordingStatusChange}
                     selectedCrop={selectedCrop}
                     onCropChange={setSelectedCrop}
+                    recordingMode={recordingMode}
+                    onRecordingModeChange={setRecordingMode}
                   />
                 ) : (
-                  <PreviewStage width={stageSize.width} height={stageSize.height} />
-                )
-              )}
+                  <PreviewStage
+                    width={stageSize.width}
+                    height={stageSize.height}
+                  />
+                ))}
 
               {workspaceMode === "preview" && showGuides && <SafeGuides />}
               {workspaceMode === "preview" && isEmpty && <StartHint />}
@@ -234,7 +298,8 @@ export function PreviewPanel() {
               <span className="h-2 w-2 rounded-full bg-emerald-400" />
               <span className="font-semibold text-zinc-200">Take Review:</span>
               <span className="font-mono text-zinc-400 text-2xs">
-                {(lastTake.durationMs / 1000).toFixed(1)}s · {lastTake.pointerEvents.length} events
+                {(lastTake.durationMs / 1000).toFixed(1)}s ·{" "}
+                {lastTake.pointerEvents.length} events
               </span>
             </div>
 
@@ -247,8 +312,13 @@ export function PreviewPanel() {
               }`}
               title="Toggle 1.5× smoothed camera tracking of the recorded mouse pointer"
             >
-              <Sparkles size={12} className={trackMouseEnabled ? "fill-current" : ""} />
-              {trackMouseEnabled ? "Track Mouse (1.5× Follow On)" : "Track Mouse (1.5×)"}
+              <Sparkles
+                size={12}
+                className={trackMouseEnabled ? "fill-current" : ""}
+              />
+              {trackMouseEnabled
+                ? "Track Mouse (1.5× Follow On)"
+                : "Track Mouse (1.5×)"}
             </button>
 
             {trackMouseEnabled && workspaceMode === "interactive" && (
@@ -262,14 +332,18 @@ export function PreviewPanel() {
                   onChange={(e) => setPreviewScrubMs(Number(e.target.value))}
                   className="w-36 accent-emerald-500 h-1.5 bg-zinc-700 rounded-lg cursor-pointer"
                 />
-                <span className="text-2xs font-mono text-zinc-300">{previewScrubMs}ms</span>
+                <span className="text-2xs font-mono text-zinc-300">
+                  {previewScrubMs}ms
+                </span>
               </div>
             )}
           </div>
 
           <div className="text-2xs text-zinc-400 flex items-center gap-2">
             <span>1.5× camera math computed deterministically via</span>
-            <span className="font-mono text-emerald-400 font-medium">MouseFollowCamera</span>
+            <span className="font-mono text-emerald-400 font-medium">
+              MouseFollowCamera
+            </span>
           </div>
         </div>
       )}
@@ -361,7 +435,10 @@ export function PreviewPanel() {
             <IconButton label="Go to start" onClick={() => setPlayhead(0)}>
               <SkipBack size={15} />
             </IconButton>
-            <IconButton label="Previous frame" onClick={() => setPlayhead(playhead - 1)}>
+            <IconButton
+              label="Previous frame"
+              onClick={() => setPlayhead(playhead - 1)}
+            >
               <ChevronsLeft size={15} />
             </IconButton>
             <IconButton
@@ -371,7 +448,10 @@ export function PreviewPanel() {
             >
               {isPlaying ? <Pause size={15} /> : <Play size={15} />}
             </IconButton>
-            <IconButton label="Next frame" onClick={() => setPlayhead(playhead + 1)}>
+            <IconButton
+              label="Next frame"
+              onClick={() => setPlayhead(playhead + 1)}
+            >
               <ChevronsRight size={15} />
             </IconButton>
             <IconButton label="Go to end" onClick={() => setPlayhead(duration)}>
@@ -380,8 +460,20 @@ export function PreviewPanel() {
           </div>
         )}
 
-        {/* Right: Safe guides */}
-        <div className="flex items-center justify-end w-28">
+        {/* Right: Safe guides & Stage Diagnostics HUD */}
+        <div className="flex items-center justify-end gap-1.5 w-32">
+          <IconButton
+            size="sm"
+            label="Toggle Stage Diagnostics HUD"
+            active={showDebugHud}
+            onClick={() => setShowDebugHud((value) => !value)}
+          >
+            <Bug
+              size={14}
+              className={showDebugHud ? "text-amber-400" : "text-zinc-400"}
+            />
+          </IconButton>
+
           {workspaceMode === "preview" && (
             <IconButton
               size="sm"
@@ -394,6 +486,16 @@ export function PreviewPanel() {
           )}
         </div>
       </div>
+
+      {/* Floating Collapsible Stage Diagnostics HUD */}
+      {showDebugHud && (
+        <StageDebugHUD
+          onClose={() => setShowDebugHud(false)}
+          workspaceMode={workspaceMode}
+          trackMouseEnabled={trackMouseEnabled}
+          isRecording={isRecording}
+        />
+      )}
     </div>
   );
 }
@@ -409,9 +511,12 @@ function StartHint() {
     >
       <div className="flex flex-col items-center gap-1.5">
         <Film size={22} className="text-text-tertiary/50" />
-        <p className="text-text-secondary text-xs font-medium">Timeline is empty</p>
+        <p className="text-text-secondary text-xs font-medium">
+          Timeline is empty
+        </p>
         <p className="text-text-tertiary text-2xs max-w-[240px] leading-relaxed">
-          Switch to Desktop Stage to record interactive takes, or import media files.
+          Switch to Desktop Stage to record interactive takes, or import media
+          files.
         </p>
       </div>
     </div>

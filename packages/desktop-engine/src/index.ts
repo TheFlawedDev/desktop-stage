@@ -25,3 +25,4 @@ export * from "./stage/vfs";
 export * from "./stage/apps";
 export * from "./stage/recorder";
 export * from "./stage/effects";
+export * from "./stage/telemetry/StageDiagnostics";

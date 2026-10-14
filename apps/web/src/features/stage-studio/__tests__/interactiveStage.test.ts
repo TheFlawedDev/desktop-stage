@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { STAGE_WIDTH, STAGE_HEIGHT } from "../InteractiveStage";
-import { StageWindowManager, MouseFollowCamera } from "@desktop-stage/desktop-engine";
+import {
+  StageWindowManager,
+  MouseFollowCamera,
+} from "@desktop-stage/desktop-engine";
 import { createProject, createClip, createId } from "@cutaway/utils";
-import type { StageTakeManifest, Rect, StagePointerEvent } from "@cutaway/types";
+import type {
+  StageTakeManifest,
+  Rect,
+  StagePointerEvent,
+} from "@cutaway/types";
 
 describe("InteractiveStage", () => {
   it("defines standard 1280x720 canvas dimensions", () => {
@@ -11,7 +18,8 @@ describe("InteractiveStage", () => {
   });
 
   it("calculates correct aspect-ratio scaling factors", () => {
-    const computeScale = (w: number, h: number) => Math.min(w / STAGE_WIDTH, h / STAGE_HEIGHT);
+    const computeScale = (w: number, h: number) =>
+      Math.min(w / STAGE_WIDTH, h / STAGE_HEIGHT);
 
     // 1280x720 container -> scale 1.0
     expect(computeScale(1280, 720)).toBe(1.0);
@@ -55,8 +63,18 @@ describe("InteractiveStage", () => {
 
   it("supports window management and dock app restacking", () => {
     const wm = new StageWindowManager();
-    const finder = wm.openApp("finder", { x: 50, y: 50, width: 400, height: 300 });
-    const iterm = wm.openApp("iterm", { x: 100, y: 100, width: 500, height: 350 });
+    const finder = wm.openApp("finder", {
+      x: 50,
+      y: 50,
+      width: 400,
+      height: 300,
+    });
+    const iterm = wm.openApp("iterm", {
+      x: 100,
+      y: 100,
+      width: 500,
+      height: 350,
+    });
 
     expect(wm.getWindows()).toHaveLength(2);
     expect(wm.getFocusedWindow()?.id).toBe(iterm.id);
@@ -102,7 +120,12 @@ describe("InteractiveStage", () => {
     ];
 
     // At t=0, camera centers at 640, 360
-    const startView = camera.computeSmoothedView(pointerEvents, 0, baseRect, 1.5);
+    const startView = camera.computeSmoothedView(
+      pointerEvents,
+      0,
+      baseRect,
+      1.5,
+    );
     expect(startView.zoom).toBe(1.5);
     expect(startView.viewport.width).toBeCloseTo(1280 / 1.5, 1);
     expect(startView.viewport.height).toBeCloseTo(720 / 1.5, 1);
@@ -114,19 +137,26 @@ describe("InteractiveStage", () => {
 
     // Compute transform translation percentage
     const dxPercent = ((baseRect.width / 2 - vpCenterX) / baseRect.width) * 100;
-    const dyPercent = ((baseRect.height / 2 - vpCenterY) / baseRect.height) * 100;
+    const dyPercent =
+      ((baseRect.height / 2 - vpCenterY) / baseRect.height) * 100;
     expect(dxPercent).toBeCloseTo(0, 1);
     expect(dyPercent).toBeCloseTo(0, 1);
 
     // At t=1000, camera moves towards 900, 200 with smoothing
-    const laterView = camera.computeSmoothedView(pointerEvents, 1000, baseRect, 1.5);
+    const laterView = camera.computeSmoothedView(
+      pointerEvents,
+      1000,
+      baseRect,
+      1.5,
+    );
     const laterCenterX = laterView.viewport.x + laterView.viewport.width / 2;
     const laterCenterY = laterView.viewport.y + laterView.viewport.height / 2;
     expect(laterCenterX).toBeGreaterThan(640);
     expect(laterCenterY).toBeLessThan(360);
 
     // Later dxPercent translates left to keep target centered
-    const laterDx = ((baseRect.width / 2 - laterCenterX) / baseRect.width) * 100;
+    const laterDx =
+      ((baseRect.width / 2 - laterCenterX) / baseRect.width) * 100;
     expect(laterDx).toBeLessThan(0);
   });
 });
