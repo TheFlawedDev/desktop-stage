@@ -78,7 +78,7 @@ export interface ResolvedDesktopFrame {
   composition: Size;
   /** Visible app windows, back to front. */
   apps: ResolvedDesktopApp[];
-  /** Actions in effect, ordered by start frame. */
+  /** Actions in effect, ordered by start frame. Hidden actions never appear. */
   actions: ResolvedDesktopAction[];
   /**
    * Ids of cursor, camera, camera-effect, and lens clips active at this frame.
@@ -152,6 +152,13 @@ export function resolveDesktopFrame(project: ProjectDocument, frame: Frame): Res
         records.push({ instanceId: payload.instanceId, clip, trackId, payload });
         appRecords.set(payload.instanceId, records);
       } else if (parsed.family === "action") {
+        // Hiding is how the user switches an action off, so a hidden action clip
+        // — or one on a hidden track — must not run. The check has to happen
+        // here, before the fold: an action mutates window state from its start
+        // frame onwards, and skipping only the visible listing would still let
+        // it rewrite titles and visibility.
+        if (clip.hidden || track.hidden) continue;
+
         actionRecords.push({
           clipId: clip.id,
           clip,
@@ -311,8 +318,13 @@ export function resolveDesktopFrame(project: ProjectDocument, frame: Frame): Res
     }
   }
 
+  // Deferred families report only what is actually on screen: a hidden clip, or
+  // one on a hidden track, is not "active" for anything downstream either.
   const deferredClipIds = deferredClips
-    .filter((clip) => isActive(clip, frame))
+    .filter(
+      (clip) =>
+        isActive(clip, frame) && !clip.hidden && !project.entities.tracks[clip.trackId]?.hidden,
+    )
     .map((clip) => clip.id);
 
   return { frame, composition, apps, actions, deferredClipIds, issues };
@@ -343,6 +355,7 @@ function firstActivePayload<T extends DesktopPayload>(
 
   for (const clip of clips) {
     if (!isDesktopPluginContent(clip.content) || clip.hidden || !isActive(clip, frame)) continue;
+    if (project.entities.tracks[clip.trackId]?.hidden) continue;
 
     const parsed = parseDesktopContent(clip.content.contentType, clip.content.data);
     if (parsed.ok && parsed.family === family) {

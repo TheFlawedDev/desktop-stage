@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { DESKTOP_CONTENT_TYPES } from "@cutaway/types";
 import { createClip } from "@cutaway/utils";
-import type { ProjectDocument } from "@cutaway/types";
+import type { Id, ProjectDocument } from "@cutaway/types";
 import { createStarterProject } from "../starterProject";
 import { createDesktopProject, createDesktopTrack } from "../project";
-import { resolveDesktopFrame } from "../resolveDesktopFrame";
+import { activeCursorPayload, resolveDesktopFrame } from "../resolveDesktopFrame";
 import {
   DESKTOP_WINDOW_CONTENT_TYPE,
   desktopWindowsToSceneNodes,
@@ -58,6 +58,32 @@ function withOrphanAction(project: ProjectDocument): ProjectDocument {
   return {
     ...project,
     entities: { ...project.entities, clips: { ...project.entities.clips, [clip.id]: clip } },
+  };
+}
+
+function withClipHidden(project: ProjectDocument, clipId: Id): ProjectDocument {
+  const clip = project.entities.clips[clipId];
+  if (!clip) throw new Error(`Fixture has no clip "${clipId}".`);
+
+  return {
+    ...project,
+    entities: {
+      ...project.entities,
+      clips: { ...project.entities.clips, [clipId]: { ...clip, hidden: true } },
+    },
+  };
+}
+
+function withTrackHidden(project: ProjectDocument, trackId: Id): ProjectDocument {
+  const track = project.entities.tracks[trackId];
+  if (!track) throw new Error(`Fixture has no track "${trackId}".`);
+
+  return {
+    ...project,
+    entities: {
+      ...project.entities,
+      tracks: { ...project.entities.tracks, [trackId]: { ...track, hidden: true } },
+    },
   };
 }
 
@@ -122,6 +148,42 @@ describe("resolveDesktopFrame", () => {
     expect(actions[1]!.text).toBe("Studio Dashboard — live");
   });
 
+  it("does not run a hidden action clip", () => {
+    const hidden = withClipHidden(project, "action-focus-terminal");
+
+    // Without the focus action, the windows fall back to their authored order.
+    expect(instanceOrder(hidden, 100)).toEqual([
+      "app-code",
+      "app-chat",
+      "app-terminal",
+      "app-browser",
+    ]);
+    expect(resolveDesktopFrame(hidden, 100).actions.map((action) => action.clipId)).not.toContain(
+      "action-focus-terminal",
+    );
+  });
+
+  it("does not run actions on a hidden track", () => {
+    const hidden = withTrackHidden(project, "track-action");
+
+    expect(instanceOrder(hidden, 100)).toEqual([
+      "app-code",
+      "app-chat",
+      "app-terminal",
+      "app-browser",
+    ]);
+    expect(resolveDesktopFrame(hidden, 100).actions).toEqual([]);
+  });
+
+  it("does not let a hidden action rewrite a window title", () => {
+    const hidden = withClipHidden(project, "action-rename-browser");
+    const browser = resolveDesktopFrame(hidden, 300).apps.find(
+      (app) => app.instanceId === "app-browser",
+    );
+
+    expect(browser!.title).toBe("Studio Dashboard");
+  });
+
   it("keeps a window with initiallyVisible false hidden until an open action", () => {
     const hidden: ProjectDocument = {
       ...project,
@@ -171,6 +233,14 @@ describe("resolveDesktopFrame", () => {
 
     const scene = resolveDesktopScene(withCursor, 100);
     expect(scene.nodes.some((node) => node.clipId === "clip-cursor")).toBe(false);
+  });
+
+  it("does not defer a cursor clip on a hidden track", () => {
+    const withCursor = withCursorClip(project);
+    const hidden = withTrackHidden(withCursor, "track-cursor");
+
+    expect(resolveDesktopFrame(hidden, 100).deferredClipIds).toEqual([]);
+    expect(activeCursorPayload(hidden, 100)).toBeNull();
   });
 
   it("flags an action whose target does not exist, and still resolves", () => {
