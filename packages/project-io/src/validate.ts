@@ -48,10 +48,12 @@ import type {
   MediaKind,
   MediaMetadata,
   MediaSource,
+  MotionPath,
   ProjectDocument,
   Track,
   TrackKind,
   Transform,
+  Vec2,
 } from "@cutaway/types";
 import { EASING_LINEAR } from "@cutaway/types";
 import {
@@ -1031,6 +1033,8 @@ function repairMasks(raw: unknown, subject: string, issues: ValidationIssue[]): 
     const shape = repairMaskShape(candidate.shape, candidate.id, subject, issues);
     if (!shape) return;
 
+    const motionPath = repairMotionPath(candidate.motionPath, subject, issues);
+
     masks.push({
       id: candidate.id,
       name: asString(candidate.name, "Mask"),
@@ -1041,10 +1045,107 @@ function repairMasks(raw: unknown, subject: string, issues: ValidationIssue[]): 
       expand: repairAnimatable(candidate.expand, 0, "mask expand", subject, issues),
       opacity: repairAnimatable(candidate.opacity, 1, "mask opacity", subject, issues),
       inverted: asBoolean(candidate.inverted, false),
+      ...(motionPath ? { motionPath } : {}),
     });
   });
 
   return masks;
+}
+
+/**
+ * Repairs an optional mask motion path.
+ *
+ * Nothing consumes `Mask.motionPath` yet, which is exactly why losing it would
+ * go unnoticed: the loss only shows up on the *next* save, once the project on
+ * disk has been rewritten without it.
+ */
+function repairMotionPath(
+  raw: unknown,
+  subject: string,
+  issues: ValidationIssue[],
+): MotionPath | null {
+  if (raw === null || raw === undefined) return null;
+
+  if (!isRecord(raw)) {
+    issues.push({
+      severity: "repaired",
+      subject,
+      message: "Mask motion path was malformed and was removed.",
+    });
+    return null;
+  }
+
+  const points = Array.isArray(raw.points)
+    ? raw.points.filter(isFiniteVec2).map((point) => ({ x: point.x, y: point.y }))
+    : [];
+
+  if (points.length === 0) {
+    issues.push({
+      severity: "dropped",
+      subject,
+      message: "Mask motion path had no readable points and was removed.",
+    });
+    return null;
+  }
+
+  return {
+    points,
+    handles: repairHandles(raw.handles, "motion path", subject, issues),
+    closed: asBoolean(raw.closed, false),
+    orientToPath: asBoolean(raw.orientToPath, false),
+    progress: repairAnimatable(raw.progress, 1, "motion path progress", subject, issues),
+  };
+}
+
+/**
+ * Repairs Bezier handles, one `{in, out}` pair per point.
+ *
+ * These are authored pen-tool data. `mask-engine` tessellates the polyline and
+ * ignores them today, so replacing the array with `[]` looks harmless right
+ * after load and permanently discards the author's curves on the next save.
+ */
+function repairHandles(
+  raw: unknown,
+  label: string,
+  subject: string,
+  issues: ValidationIssue[],
+): { in: Vec2; out: Vec2 }[] {
+  if (raw === undefined) return [];
+
+  if (!Array.isArray(raw)) {
+    issues.push({
+      severity: "repaired",
+      subject,
+      message: `Mask ${label} handles were not an array and have been reset.`,
+    });
+    return [];
+  }
+
+  let repaired = 0;
+
+  const handles = raw.map((candidate): { in: Vec2; out: Vec2 } => {
+    if (isRecord(candidate) && isFiniteVec2(candidate.in) && isFiniteVec2(candidate.out)) {
+      return {
+        in: { x: candidate.in.x, y: candidate.in.y },
+        out: { x: candidate.out.x, y: candidate.out.y },
+      };
+    }
+
+    repaired += 1;
+    return { in: { x: 0, y: 0 }, out: { x: 0, y: 0 } };
+  });
+
+  if (repaired > 0) {
+    issues.push({
+      severity: "repaired",
+      subject,
+      message: `Mask ${label} had ${repaired} unreadable handle${
+        repaired === 1 ? "" : "s"
+      }, which were reset.`,
+    });
+  }
+
+  return handles;
 }
 
 function repairMaskShape(
@@ -1096,7 +1197,7 @@ function repairMaskShape(
   return {
     kind: "path",
     vertices,
-    handles: [],
+    handles: repairHandles(raw.handles, "path", subject, issues),
     closed: asBoolean(raw.closed, true),
   };
 }

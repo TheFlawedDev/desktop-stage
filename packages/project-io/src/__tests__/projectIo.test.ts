@@ -10,7 +10,7 @@ import {
 } from "../serialize";
 import { validateProject } from "../validate";
 import { migrateDocument } from "../migrate";
-import type { MediaAsset, ProjectDocument } from "@cutaway/types";
+import type { Mask, MediaAsset, ProjectDocument } from "@cutaway/types";
 
 function imageAsset(id: string): MediaAsset {
   return {
@@ -71,6 +71,111 @@ describe("round trip", () => {
 
     expect(result.issues).toEqual([]);
     expect(result.project).toEqual(project);
+  });
+
+  it("preserves pen-tool mask handles and motion paths", () => {
+    // `mask-engine` tessellates the polyline and ignores handles today, so
+    // losing them is invisible until the next save rewrites the project
+    // without them. Nothing consumes `motionPath` at all yet.
+    const mask: Mask = {
+      id: "mask-1",
+      name: "Path mask",
+      enabled: true,
+      shape: {
+        kind: "path",
+        vertices: [
+          { type: "static", value: { x: 10, y: 20 } },
+          { type: "static", value: { x: 30, y: 40 } },
+        ],
+        handles: [
+          { in: { x: -5, y: 0 }, out: { x: 5, y: 0 } },
+          { in: { x: -5, y: 0 }, out: { x: 5, y: 0 } },
+        ],
+        closed: true,
+      },
+      mode: "add",
+      feather: { type: "static", value: 0 },
+      expand: { type: "static", value: 0 },
+      opacity: { type: "static", value: 1 },
+      inverted: false,
+      motionPath: {
+        points: [
+          { x: 0, y: 0 },
+          { x: 100, y: 0 },
+        ],
+        handles: [],
+        closed: false,
+        orientToPath: true,
+        progress: { type: "static", value: 1 },
+      },
+    };
+
+    const project = populatedProject();
+    const clipId = Object.keys(project.entities.clips)[0]!;
+    const withMask: ProjectDocument = {
+      ...project,
+      entities: {
+        ...project.entities,
+        clips: {
+          [clipId]: { ...project.entities.clips[clipId]!, masks: [mask] },
+        },
+      },
+    };
+
+    const result = parseProjectFile(serializeProject(withMask));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.issues).toEqual([]);
+    expect(result.project.entities.clips[clipId]!.masks).toEqual([mask]);
+  });
+
+  it("repairs unreadable mask handles and motion paths with an explicit issue", () => {
+    const project = populatedProject();
+    const clipId = Object.keys(project.entities.clips)[0]!;
+    const clip = project.entities.clips[clipId]!;
+
+    const { project: repaired, issues } = validateProject({
+      ...project,
+      entities: {
+        ...project.entities,
+        clips: {
+          [clipId]: {
+            ...clip,
+            masks: [
+              {
+                id: "mask-1",
+                shape: {
+                  kind: "path",
+                  vertices: [{ type: "static", value: { x: 1, y: 2 } }],
+                  handles: [{ in: { x: 0, y: 0 }, out: "nope" }],
+                  closed: true,
+                },
+                motionPath: { points: [{ x: 0, y: 0 }, "nope"], progress: "start" },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    const mask = repaired.entities.clips[clipId]!.masks[0]!;
+    expect(mask.shape).toEqual({
+      kind: "path",
+      vertices: [{ type: "static", value: { x: 1, y: 2 } }],
+      handles: [{ in: { x: 0, y: 0 }, out: { x: 0, y: 0 } }],
+      closed: true,
+    });
+    expect(mask.motionPath).toEqual({
+      points: [{ x: 0, y: 0 }],
+      handles: [],
+      closed: false,
+      orientToPath: false,
+      progress: { type: "static", value: 1 },
+    });
+    expect(issues.some((i) => /unreadable handle/i.test(i.message))).toBe(true);
+    expect(issues.some((i) => /motion path progress/i.test(i.message))).toBe(true);
   });
 
   it("writes a self-identifying, human-readable file", () => {
