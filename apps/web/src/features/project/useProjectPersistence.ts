@@ -335,18 +335,21 @@ export function useProjectPersistence(): ProjectPersistence {
 
             if (result.ok) {
               replaceProject(result.restored.project);
-              setLastSavedAt(stored.savedAt);
-              setSaveState("saved");
 
               const messages = [...result.restored.issues];
               if (result.restored.fromFuture)
                 messages.unshift(FUTURE_PROJECT_MESSAGE);
-              // A repaired or future document is opened as a fresh-id copy, so
-              // the record it came from is never overwritten by the next
-              // autosave. The copy is a new record, so its saved time is now.
               if (result.restored.recovered) {
+                // A repaired or future document is opened as a fresh-id copy
+                // that has not been written anywhere yet. Showing the original's
+                // saved time — or "now" — would claim a save that never
+                // happened; the autosave that follows reports its own outcome.
                 messages.unshift(RESTORE_RECOVERED_MESSAGE);
-                setLastSavedAt(Date.now());
+              } else {
+                // A clean restore is byte-identical to the record on the shelf,
+                // so its saved time is the truth to display.
+                setLastSavedAt(stored.savedAt);
+                setSaveState("saved");
               }
               setLoadIssues(messages);
 
