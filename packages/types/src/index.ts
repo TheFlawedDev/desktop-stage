@@ -18,3 +18,4 @@ export * from "./media";
 export * from "./caption";
 export * from "./project";
 export * from "./desktop";
+export * from "./stage-contracts";
