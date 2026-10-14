@@ -20,7 +20,7 @@ import {
 } from "@cutaway/timeline-engine";
 import { retimeBlock, shiftBlock } from "@cutaway/caption-engine";
 import { createClipForAsset, trackKindForAsset } from "@cutaway/media-engine";
-import { createId, createProject, createTrack } from "@cutaway/utils";
+import { createId, createTrack } from "@cutaway/utils";
 import { createStarterProject } from "@desktop-stage/desktop-engine";
 import {
   canRedo as historyCanRedo,

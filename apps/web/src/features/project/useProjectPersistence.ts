@@ -199,11 +199,19 @@ export function useProjectPersistence(): ProjectPersistence {
   /**
    * Where the startup restore got to; gates every write until it finishes.
    *
-   * The automatic writers read `restoreGate.state` and check
-   * {@link mayWriteProject}, while a manual save goes through
-   * `runManualSave`, which waits for the restore and applies the same rule.
+   * The automatic writers read `restoreGateRef.current.state` and check
+   * {@link mayWriteProject}, while a manual save goes through `runManualSave`,
+   * which waits for the restore and applies the same rule.
+   *
+   * The gate is mutable state that deliberately lives outside React: it settles
+   * from an async effect, and each write path must read its *live* value when it
+   * runs rather than a value captured at render. Reading it through the ref says
+   * so explicitly. A plain `restoreGate.state` read looks like a reactive
+   * dependency, and treating it as one would re-run the autosave effect on an
+   * `empty` restore — persisting the untouched starter, whose record would then
+   * be what startup restores, suppressing the one-time legacy-import offer.
    */
-  const restoreGate = useRef(new ProjectWriteGate()).current;
+  const restoreGateRef = useRef(new ProjectWriteGate());
   /**
    * The document this session opened with, before any restore replaced it.
    *
@@ -302,7 +310,7 @@ export function useProjectPersistence(): ProjectPersistence {
      * ignores this second settle when a real outcome already landed.
      */
     const settleRestore = (state: "restored" | "empty" | "failed") => {
-      settleRestoreAttempt(restoreGate, cancelled, state);
+      settleRestoreAttempt(restoreGateRef.current, cancelled, state);
     };
 
     void (async () => {
@@ -406,13 +414,15 @@ export function useProjectPersistence(): ProjectPersistence {
   // That also covers the legacy candidate, which lives in `localStorage` and is
   // read, never written, here until the user decides.
   useEffect(() => {
-    if (!mayWriteProject(restoreGate.state, isUntouchedStarter())) return;
+    if (!mayWriteProject(restoreGateRef.current.state, isUntouchedStarter()))
+      return;
 
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       // Re-checked at fire time: an undo can put the untouched starter back in
       // memory between scheduling this write and it running.
-      if (!mayWriteProject(restoreGate.state, isUntouchedStarter())) return;
+      if (!mayWriteProject(restoreGateRef.current.state, isUntouchedStarter()))
+        return;
       void persist(project);
     }, AUTOSAVE_DELAY_MS);
 
@@ -429,7 +439,8 @@ export function useProjectPersistence(): ProjectPersistence {
       // flushed after a restore that failed. Either write would put a project
       // the user never authored on the shelf with a newer `savedAt` than the
       // record it should be read from.
-      if (!mayWriteProject(restoreGate.state, isUntouchedStarter())) return;
+      if (!mayWriteProject(restoreGateRef.current.state, isUntouchedStarter()))
+        return;
 
       // A pending debounce would be lost when the tab closes, so the latest
       // state is flushed synchronously-ish here. Best effort: browsers do not
@@ -448,11 +459,11 @@ export function useProjectPersistence(): ProjectPersistence {
     // gate waits for the restore rather than writing the starter into the shelf
     // with a newer `savedAt` than the project being restored, and applies the
     // same untouched-starter rule as the automatic writers.
-    return restoreGate.runManualSave(async () => {
+    return restoreGateRef.current.runManualSave(async () => {
       if (timerRef.current) clearTimeout(timerRef.current);
       await persist(useEditorStore.getState().project);
     }, isUntouchedStarter);
-  }, [persist, restoreGate, isUntouchedStarter]);
+  }, [persist, isUntouchedStarter]);
 
   /**
    * Document-only JSON export.
