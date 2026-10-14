@@ -27,12 +27,24 @@ const settings = (over: Partial<ExportSettings> = {}): ExportSettings => ({
 
 /**
  * A project with one visible video clip spanning the whole timeline — the
- * ordinary case. `planExport` inspects clips to reject empty renders, so a
- * bare `{ durationFrames }` stub is no longer a valid document.
+ * ordinary case. `planExport` inspects clips to reject empty renders and the
+ * document's own frame rate to reject a mismatched export, so a bare
+ * `{ durationFrames }` stub is no longer a valid document.
  */
-const project = (durationFrames: number, over: Partial<ProjectEntities> = {}): ProjectDocument =>
+const project = (
+  durationFrames: number,
+  over: Partial<ProjectEntities> = {},
+  frameRate = 30,
+): ProjectDocument =>
   ({
     durationFrames,
+    settings: {
+      resolution: { width: 1920, height: 1080 },
+      aspectRatio: "16:9",
+      frameRate,
+      backgroundColor: "#000000",
+      sampleRate: 48000,
+    },
     entities: {
       clips: {
         c1: {
@@ -216,6 +228,26 @@ describe("planExport", () => {
     expect(() => planExport(project(30), settings({ frameRate: 0 }))).toThrow(ExportPlanError);
   });
 
+  it("rejects an export rate that differs from the project's", () => {
+    expect(() => planExport(project(150), settings({ frameRate: 60 }))).toThrow(ExportPlanError);
+    expect(() => planExport(project(150), settings({ frameRate: 60 }))).toThrow(/match the project/i);
+  });
+
+  it("accepts the project's own rate and keeps the duration right", () => {
+    const plan = planExport(project(150, {}, 30), settings({ frameRate: 30 }));
+
+    expect(plan.frameRate).toBe(30);
+    expect(plan.durationSeconds).toBeCloseTo(5);
+  });
+
+  it("keeps a non-30 project's duration in its own rate", () => {
+    // 25 fps is the reason the check compares to the project rather than
+    // demanding a fixed rate: a 100-frame project is 4 seconds, not 3.33.
+    const plan = planExport(project(100, {}, 25), settings({ frameRate: 25 }));
+
+    expect(plan.durationSeconds).toBeCloseTo(4);
+  });
+
   it("carries codec and bitrate settings into the plan", () => {
     const plan = planExport(project(30), settings({ videoCodec: "vp9", videoBitrate: 12_000_000 }));
     expect(plan.videoCodec).toBe("vp9");
@@ -232,7 +264,7 @@ describe("frame timing", () => {
   });
 
   it("computes a nominal frame duration", () => {
-    const plan = planExport(project(90), settings({ frameRate: 25 }));
+    const plan = planExport(project(90, {}, 25), settings({ frameRate: 25 }));
     expect(frameDurationMicros(plan)).toBe(40_000);
   });
 });

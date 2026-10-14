@@ -39,7 +39,6 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
 
   const [format, setFormat] = useState<ExportFormat>(stored.format === "webm" ? "webm" : "mp4");
   const [height, setHeight] = useState<number>(projectRes.height);
-  const [frameRate, setFrameRate] = useState<number>(projectFps);
   const [quality, setQuality] = useState<Quality>("medium");
 
   // An in/out selection is available when either point is set; the untouched end
@@ -70,17 +69,19 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     () => ({
       format,
       resolution,
-      frameRate,
+      // Locked to the project: `planExport` rejects any other rate, because
+      // nothing resamples the frames or the audio yet.
+      frameRate: projectFps,
       videoBitrate: Math.max(
         500_000,
-        Math.round(resolution.width * resolution.height * frameRate * BPP[quality]),
+        Math.round(resolution.width * resolution.height * projectFps * BPP[quality]),
       ),
       audioBitrate: 192_000,
       videoCodec: format === "webm" ? "vp9" : "h264",
       audioCodec: format === "webm" ? "opus" : "aac",
       range: useSelection && hasSelection ? selection : null,
     }),
-    [format, resolution, frameRate, quality, useSelection, hasSelection, selection],
+    [format, resolution, projectFps, quality, useSelection, hasSelection, selection],
   );
 
   // Validate the chosen settings so the summary reflects real, encodable output
@@ -151,17 +152,17 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             </Field>
 
             <Field label="Frame rate">
-              <Select value={String(frameRate)} onChange={(v) => setFrameRate(Number(v))}>
+              {/* Locked rather than hidden: the rate is a real export setting, and
+                  showing it disabled says why it cannot be changed yet. */}
+              <Select value={String(projectFps)} onChange={() => {}} disabled>
                 <option value={String(projectFps)}>Project ({projectFps} fps)</option>
-                {[24, 30, 60]
-                  .filter((f) => f !== projectFps)
-                  .map((f) => (
-                    <option key={f} value={String(f)}>
-                      {f} fps
-                    </option>
-                  ))}
               </Select>
             </Field>
+
+            <p className="text-2xs text-text-tertiary">
+              Frame rate follows the project. Exporting at another rate needs resampling, which is
+              not supported yet.
+            </p>
 
             <Field label="Quality">
               <Select value={quality} onChange={(v) => setQuality(v as Quality)}>
@@ -259,19 +260,23 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function Select({
   value,
   onChange,
+  disabled,
   children,
 }: {
   value: string;
   onChange: (value: string) => void;
+  disabled?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
+      disabled={disabled}
       className={cn(
         "bg-surface-input text-text-secondary hover:text-text-primary w-full rounded-xs px-2 py-1 text-xs",
         "focus-visible:ring-accent focus-visible:ring-2 focus-visible:outline-none",
+        disabled && "cursor-not-allowed opacity-60",
       )}
     >
       {children}

@@ -9,6 +9,7 @@ const plan = (totalFrames: number, frameRate = 30): ExportPlan =>
   planExport(
     {
       durationFrames: totalFrames,
+      settings: { frameRate },
       entities: {
         clips: {
           c1: {
@@ -84,6 +85,7 @@ describe("runVideoExport", () => {
     const p = planExport(
       {
         durationFrames: 300,
+        settings: { frameRate: 30 },
         entities: {
           clips: {
             c1: {

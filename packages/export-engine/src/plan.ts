@@ -27,6 +27,7 @@ export interface ExportPlan {
   totalFrames: number;
   /** Output pixel dimensions. Both even, as video codecs require. */
   resolution: Size;
+  /** Output rate. Always the project's own rate until resampling exists. */
   frameRate: number;
   /** Wall-clock length of the output in seconds. */
   durationSeconds: number;
@@ -157,6 +158,18 @@ export function planExport(project: ProjectDocument, settings: ExportSettings): 
 
   if (settings.frameRate <= 0) {
     throw new ExportPlanError("Frame rate must be greater than zero.");
+  }
+
+  // Nothing resamples yet, so the output has to run at the project's own rate:
+  // encoding 30 fps content at 60 would repeat frames and stretch the audio,
+  // while 15 would drop them — both without the retiming that would make the
+  // result correct. Refusing keeps duration and audio speed identical to the
+  // preview.
+  if (settings.frameRate !== project.settings.frameRate) {
+    throw new ExportPlanError(
+      `Export frame rate must match the project's ${project.settings.frameRate} fps — ` +
+        "changing the rate needs resampling, which is not available yet.",
+    );
   }
 
   const totalFrames = endFrame - startFrame;
