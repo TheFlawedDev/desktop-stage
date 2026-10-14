@@ -117,6 +117,17 @@ function isFiniteVec2(value: unknown): value is { x: number; y: number } {
   return isRecord(value) && isFiniteNumber(value.x) && isFiniteNumber(value.y);
 }
 
+/**
+ * Writes an own property onto a map built from user data.
+ *
+ * A plain `map["__proto__"] = value` assignment invokes the `Object.prototype`
+ * setter instead of storing anything, silently replacing the map's prototype.
+ * Entity ids come straight from the file, so they get the explicit write.
+ */
+function setOwn<T>(map: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(map, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
 const BLEND_MODES: readonly BlendMode[] = [
   "normal",
   "multiply",
@@ -305,7 +316,7 @@ function validateTracks(
 
     const base = createTrack({ kind, index: asFiniteNumber(value.index, 0) });
 
-    tracks[id] = {
+    setOwn(tracks, id, {
       ...base,
       id: value.id,
       name: asString(value.name, base.name),
@@ -318,7 +329,7 @@ function validateTracks(
       height: Math.max(1, asFiniteNumber(value.height, base.height)),
       volume: Math.min(1, Math.max(0, asFiniteNumber(value.volume, 1))),
       effects: repairEffects(value.effects, subject, issues),
-    };
+    });
   }
 
   // A project with clips but no tracks cannot render anything, so give it the
@@ -364,7 +375,7 @@ function validateMedia(raw: unknown, issues: ValidationIssue[]): Record<string, 
       });
     }
 
-    media[id] = {
+    setOwn(media, id, {
       id: value.id,
       name: asString(value.name, id),
       kind,
@@ -374,7 +385,7 @@ function validateMedia(raw: unknown, issues: ValidationIssue[]): Record<string, 
       thumbnailKey: typeof value.thumbnailKey === "string" ? value.thumbnailKey : null,
       waveformKey: typeof value.waveformKey === "string" ? value.waveformKey : null,
       importedAt: asFiniteNumber(value.importedAt, 0),
-    };
+    });
   }
 
   return media;
@@ -477,13 +488,13 @@ function validateMarkers(raw: unknown, issues: ValidationIssue[]): Record<string
       continue;
     }
 
-    markers[id] = {
+    setOwn(markers, id, {
       id: value.id,
       frame: asFiniteNumber(value.frame, 0),
       label: asString(value.label, ""),
       color: asString(value.color, "#ffffff"),
       durationFrames: Math.max(0, asFiniteNumber(value.durationFrames, 0)),
-    };
+    });
   }
 
   return markers;
@@ -520,7 +531,7 @@ function validateCaptionTracks(
 
     let sourceMediaId: string | null = null;
     if (typeof value.sourceMediaId === "string") {
-      if (media[value.sourceMediaId]) {
+      if (Object.hasOwn(media, value.sourceMediaId)) {
         sourceMediaId = value.sourceMediaId;
       } else {
         issues.push({
@@ -531,13 +542,13 @@ function validateCaptionTracks(
       }
     }
 
-    tracks[id] = {
+    setOwn(tracks, id, {
       id: value.id,
       sourceMediaId,
       language: asString(value.language, "en"),
       blocks: repairCaptionBlocks(value.blocks, subject, issues),
       presetId: asString(value.presetId, DEFAULT_CAPTION_PRESET_ID),
-    };
+    });
   }
 
   return tracks;
@@ -674,7 +685,10 @@ function validateClips(
     // Referential integrity. An orphaned clip would sit invisibly in the
     // document forever, contributing to duration and never rendering.
     const trackId = typeof value.trackId === "string" ? value.trackId : "";
-    const track = tracks[trackId];
+    // `Object.hasOwn`, not a truthiness check: `tracks["constructor"]` is a
+    // function on `Object.prototype`, so a phantom id would pass and the clip
+    // would render on a track that does not exist.
+    const track = Object.hasOwn(tracks, trackId) ? tracks[trackId] : undefined;
     if (!track) {
       issues.push({
         severity: "dropped",
@@ -733,14 +747,10 @@ function validateClips(
       });
     }
 
-    clips[id] = sanitizeClip(
-      value,
-      content,
-      trackId,
-      startFrame,
-      durationFrames,
-      subject,
-      issues,
+    setOwn(
+      clips,
+      id,
+      sanitizeClip(value, content, trackId, startFrame, durationFrames, subject, issues),
     );
   }
 
@@ -1228,7 +1238,11 @@ function repairEffects(
     const params: Record<string, Animatable<EffectParamValue>> = {};
     if (isRecord(candidate.params)) {
       for (const [key, value] of Object.entries(candidate.params)) {
-        params[key] = repairAnimatable(value, 0, `effect parameter "${key}"`, subject, issues);
+        setOwn(
+          params,
+          key,
+          repairAnimatable(value, 0, `effect parameter "${key}"`, subject, issues),
+        );
       }
     }
 
@@ -1361,7 +1375,9 @@ function repairContent(
 
   const mediaIdFor = (): string | null => {
     const mediaId = typeof raw.mediaId === "string" ? raw.mediaId : "";
-    return mediaId && media[mediaId] ? mediaId : null;
+    // Own-property check, not truthiness: `media["constructor"]` resolves to a
+    // function, which would keep a dangling reference to a phantom asset.
+    return mediaId && Object.hasOwn(media, mediaId) ? mediaId : null;
   };
 
   switch (raw.kind) {
@@ -1555,7 +1571,7 @@ function validateTrackOrder(
   const result: string[] = [];
 
   for (const id of order) {
-    if (!tracks[id] || seen.has(id)) continue;
+    if (!Object.hasOwn(tracks, id) || seen.has(id)) continue;
     seen.add(id);
     result.push(id);
   }

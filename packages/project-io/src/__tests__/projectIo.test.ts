@@ -320,6 +320,66 @@ describe("validateProject repair", () => {
 
     expect(validateProject(lying).project.durationFrames).toBe(60);
   });
+
+  it("rejects ids that only resolve through the prototype chain", () => {
+    // `tracks["constructor"]` is `Object`, `media["toString"]` is a function, so
+    // a truthiness check keeps a clip whose track and media do not exist.
+    const { project: repaired, issues } = validateProject({
+      schemaVersion: SCHEMA_VERSION,
+      trackOrder: ["constructor", "__proto__", "t1", "hasOwnProperty"],
+      entities: {
+        tracks: { t1: { id: "t1", kind: "video" } },
+        media: { m1: { id: "m1", source: { type: "indexeddb", key: "k" } } },
+        clips: {
+          good: {
+            id: "good",
+            trackId: "t1",
+            startFrame: 0,
+            durationFrames: 5,
+            content: { kind: "image", mediaId: "m1" },
+          },
+          phantomTrack: {
+            id: "phantomTrack",
+            trackId: "constructor",
+            startFrame: 0,
+            durationFrames: 5,
+            content: { kind: "image", mediaId: "m1" },
+          },
+          phantomProto: {
+            id: "phantomProto",
+            trackId: "__proto__",
+            startFrame: 0,
+            durationFrames: 5,
+            content: { kind: "image", mediaId: "m1" },
+          },
+          phantomMedia: {
+            id: "phantomMedia",
+            trackId: "t1",
+            startFrame: 0,
+            durationFrames: 5,
+            content: { kind: "image", mediaId: "toString" },
+          },
+        },
+        captionTracks: {
+          ct: {
+            id: "ct",
+            sourceMediaId: "hasOwnProperty",
+            language: "en",
+            presetId: "core.captions.tiktok",
+            blocks: [],
+          },
+        },
+      },
+    });
+
+    expect(repaired.trackOrder).toEqual(["t1"]);
+    expect(Object.keys(repaired.entities.clips)).toEqual(["good"]);
+    expect(repaired.entities.captionTracks.ct!.sourceMediaId).toBeNull();
+
+    for (const id of ["phantomTrack", "phantomProto", "phantomMedia"]) {
+      expect(issues.some((i) => i.severity === "dropped" && i.subject === `clip:${id}`)).toBe(true);
+    }
+  });
 });
 
 describe("validateProject totality on malformed JSON", () => {
