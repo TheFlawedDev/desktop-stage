@@ -1172,10 +1172,12 @@ function repairMotionPath(
  *
  * `expectedCount` is the number of points or vertices they belong to. Handles
  * are never filtered or shifted: an entry that cannot be read is reset in place
- * so index `i` still means "the handle for point `i`", and the array is padded
- * or truncated to match rather than trusting the file. A mismatch is reported,
- * because a shorter array means any reader indexing `handles[i]` gets
- * `undefined`, and a longer one means trailing authored data was dropped.
+ * so index `i` still means "the handle for point `i`", and a non-empty array is
+ * padded or truncated to match rather than trusting the file. A mismatch is
+ * reported, because a shorter array means any reader indexing `handles[i]` gets
+ * `undefined`, and a longer one means trailing authored data was dropped. An
+ * explicit `[]` is left alone: it is the documented polyline spelling, not a
+ * count to reconcile.
  */
 function repairHandles(
   raw: unknown,
@@ -1220,6 +1222,13 @@ function repairHandles(
       }, which were reset.`,
     });
   }
+
+  // An explicit `[]` is authored data, not a truncated list: `MotionPath`
+  // documents "empty means polyline", and the polygon tool emits exactly that
+  // for a path with no curves. Preserve it untouched and say nothing. Only a
+  // list that *carries* handles is held to one-per-point; a missing list is a
+  // half-written file, padded below so `handles[i]` still resolves.
+  if (Array.isArray(raw) && raw.length === 0) return handles;
 
   if (handles.length !== expectedCount) {
     const supplied = handles.length;

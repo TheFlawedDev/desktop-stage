@@ -300,7 +300,13 @@ describe("round trip", () => {
 
     const mask = repaired.entities.clips[clipId]!.masks[0]!;
     const shape = mask.shape as { handles: { in: Vec2; out: Vec2 }[] };
-    expect(shape.handles).toEqual([handles[0], { in: { x: 0, y: 0 }, out: { x: 0, y: 0 } }]);
+    // Three vertices, one authored handle: the handle list is filled out to one
+    // per vertex, so every `handles[i]` still names the vertex it belongs to.
+    expect(shape.handles).toEqual([
+      handles[0],
+      { in: { x: 0, y: 0 }, out: { x: 0, y: 0 } },
+      { in: { x: 0, y: 0 }, out: { x: 0, y: 0 } },
+    ]);
     expect(mask.motionPath!.handles).toEqual([handles[0]]);
     expect(mask.motionPath!.points).toHaveLength(1);
 
@@ -925,28 +931,35 @@ describe("parseProjectFile malformed documents", () => {
     // `JSON.parse` produces an *own* `"__proto__"` key, so both the validator's
     // media map and every later writer need `Object.defineProperty`; a plain
     // assignment would make the asset the map's prototype and silently drop it
-    // on the next save.
-    const raw = JSON.stringify({
-      magic: PROJECT_FILE_MAGIC,
-      schemaVersion: SCHEMA_VERSION,
-      settings: { name: "Proto", resolution: { width: 640, height: 360 }, frameRate: 30 },
-      entities: {
-        tracks: {},
-        clips: {},
-        media: {
-          __proto__: {
-            id: "__proto__",
-            name: "evil.png",
-            kind: "image",
-            mimeType: "image/png",
-            source: { type: "indexeddb", key: "proto:source" },
+    // on the next save. The document is written as text and parsed for exactly
+    // that reason: an object literal's `__proto__:` sets the prototype instead
+    // of creating a key, which is the defect this test is about.
+    const project = JSON.parse(
+      `{
+        "schemaVersion": ${SCHEMA_VERSION},
+        "settings": { "name": "Proto", "resolution": { "width": 640, "height": 360 }, "frameRate": 30 },
+        "entities": {
+          "tracks": {},
+          "clips": {},
+          "media": {
+            "__proto__": {
+              "id": "__proto__",
+              "name": "evil.png",
+              "kind": "image",
+              "mimeType": "image/png",
+              "source": { "type": "indexeddb", "key": "proto:source" }
+            }
           },
+          "markers": {},
+          "captionTracks": {}
         },
-        markers: {},
-        captionTracks: {},
-      },
-      trackOrder: [],
-    });
+        "trackOrder": []
+      }`,
+    ) as Record<string, unknown>;
+
+    // A file envelope carries the document under `project`; `magic` alone is an
+    // envelope with no document and is rejected.
+    const raw = JSON.stringify({ magic: PROJECT_FILE_MAGIC, project });
 
     const result = parseProjectFile(raw);
     expect(result.ok).toBe(true);

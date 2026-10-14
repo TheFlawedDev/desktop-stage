@@ -16,6 +16,7 @@ import {
   type ArchiveBlobStore,
   type ArchiveLimits,
 } from "../archive";
+import { setOwn } from "../own";
 
 /** Minimal in-memory stand-in for the IndexedDB media store. */
 class MemoryBlobStore implements ArchiveBlobStore {
@@ -71,7 +72,10 @@ function projectWithMedia(...ids: string[]): ProjectDocument {
   const clips: Record<string, Clip> = {};
 
   ids.forEach((id, index) => {
-    media[id] = mediaAsset(id);
+    // `setOwn`, not `media[id] = …`: a `"__proto__"` id is a legitimate media
+    // key, and a plain assignment would make the asset the map's prototype
+    // instead of an entry the exporter can see.
+    setOwn(media, id, mediaAsset(id));
     const clip = createClip({
       id: `clip-${id}`,
       trackId: track.id,

@@ -121,7 +121,7 @@ describe("clips keyed __proto__", () => {
           videoClip("clip-2", "track-1", 10, 10),
         ),
       );
-    useEditorStore.setState({ selectedClipIds: ["clip-2"] });
+    useEditorStore.setState({ selectedClipIds: ["__proto__"] });
 
     useEditorStore.getState().deleteSelected();
 
@@ -129,8 +129,10 @@ describe("clips keyed __proto__", () => {
     expect(Object.getPrototypeOf(clips)).toBe(Object.prototype);
     expect(Object.hasOwn(clips, "clip-2")).toBe(true);
     expect(Object.keys(clips)).toEqual(["clip-2"]);
-    // The rewrite is what closes the gap, so a lost own key would also lose the
-    // ripple.
+    // The ripple only closes the gap if the `"__proto__"` clip was carried as an
+    // own key: a lost key means `deleteSelected` never finds it, and the
+    // survivor stays at frame 10. The rewrite then has to store `clip-2` as an
+    // own key too.
     expect(clips["clip-2"]!.startFrame).toBe(0);
   });
 
