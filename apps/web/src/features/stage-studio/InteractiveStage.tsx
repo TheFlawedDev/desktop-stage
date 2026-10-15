@@ -28,6 +28,9 @@ import {
   Image as ImageIcon,
   ExternalLink,
   BookOpen,
+  Film,
+  Music,
+  FileText,
 } from "lucide-react";
 import {
   StageWindowManager,
@@ -70,6 +73,49 @@ export function AppleLogo({
       <path d={APPLE_SVG_PATH} />
     </svg>
   );
+}
+
+/** Exact Lucide SVG vector paths (24x24 coordinate box) for pixel-identical canvas rasterization */
+export const LUCIDE_PATHS = {
+  folder:
+    "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
+  terminal: "M4 17l6-6-6-6M12 19h8",
+  globe:
+    "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z M2 12h20 M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z",
+  video:
+    "M16 13l5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5 M2 8a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2z",
+  camera:
+    "M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z M12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
+  film:
+    "M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M2 8h20 M2 16h20 M6 4v16 M18 4v16",
+  fileText:
+    "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8",
+  music:
+    "M9 18V5l12-2v13 M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0z M21 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0z",
+  image:
+    "M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z M8.5 10a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z M21 15l-5-5L5 21",
+};
+
+/** Draws an authentic Lucide vector icon onto canvas matching DOM JSX 1:1 */
+export function drawLucideIcon(
+  ctx: CanvasRenderingContext2D,
+  pathData: string,
+  x: number,
+  y: number,
+  size: number,
+  strokeColor: string,
+  lineWidth: number = 1.75,
+) {
+  ctx.save();
+  ctx.translate(x, y);
+  const scale = size / 24;
+  ctx.scale(scale, scale);
+  ctx.strokeStyle = strokeColor;
+  ctx.lineWidth = lineWidth / scale;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.stroke(new Path2D(pathData));
+  ctx.restore();
 }
 
 export interface InteractiveStageHandle {
@@ -970,7 +1016,7 @@ export const InteractiveStage = forwardRef<
 
           ctx.fillStyle = "#e4e4e7";
           ctx.font = "bold 11px -apple-system, sans-serif";
-          ctx.fillText("Virtual Root (/)", rx + 12, cy + 18);
+          ctx.fillText("Virtual Root (/) · Drag files from OS", rx + 12, cy + 18);
 
           ctx.fillStyle = "#a1a1aa";
           ctx.font = "10px -apple-system, sans-serif";
@@ -987,8 +1033,8 @@ export const InteractiveStage = forwardRef<
             const col = i % 4;
             const row = Math.floor(i / 4);
             const fx = itemStartX + col * 90;
-            const fy = itemStartY + row * 75;
-            if (fy + 60 > ry + rh - 30) break;
+            const fy = itemStartY + row * 82;
+            if (fy + 72 > ry + rh - 30) break;
 
             // File media badges
             const mediaInfo = classifyMediaFile(file.name);
@@ -1011,25 +1057,53 @@ export const InteractiveStage = forwardRef<
               badgeText = "#34d399";
             }
 
-            ctx.fillStyle = file.isDir ? "#1e293b" : badgeBg;
-            ctx.beginPath();
-            ctx.roundRect(fx + 14, fy, 28, 28, 4);
-            ctx.fill();
-            ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
-            ctx.stroke();
+            // 1. Draw authentic Lucide vector icon matching DOM
+            let iconPath = LUCIDE_PATHS.fileText;
+            let iconColor = "#a1a1aa";
+            if (file.isDir) {
+              iconPath = LUCIDE_PATHS.folder;
+              iconColor = "#60a5fa";
+            } else if (mediaInfo.kind === "video") {
+              iconPath = LUCIDE_PATHS.film;
+              iconColor = "#c084fc";
+            } else if (mediaInfo.kind === "audio") {
+              iconPath = LUCIDE_PATHS.music;
+              iconColor = "#fbbf24";
+            } else if (mediaInfo.kind === "image") {
+              iconPath = LUCIDE_PATHS.image;
+              iconColor = "#34d399";
+            }
 
-            ctx.fillStyle = file.isDir ? "#60a5fa" : badgeText;
-            ctx.font = "bold 9px monospace";
-            ctx.textAlign = "center";
-            ctx.fillText(file.isDir ? "DIR" : mediaInfo.badge, fx + 28, fy + 18);
+            drawLucideIcon(ctx, iconPath, fx + 15, fy, 26, iconColor, 1.75);
 
-            // File name & size
+            // 2. Draw format pill badge for files
+            if (!file.isDir) {
+              const badgeW = 34;
+              const badgeH = 12;
+              const bx = fx + 28 - badgeW / 2;
+              const by = fy + 28;
+              ctx.fillStyle = badgeBg;
+              ctx.beginPath();
+              ctx.roundRect(bx, by, badgeW, badgeH, 3);
+              ctx.fill();
+              ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+              ctx.stroke();
+
+              ctx.fillStyle = badgeText;
+              ctx.font = "bold 8px monospace";
+              ctx.textAlign = "center";
+              ctx.fillText(mediaInfo.badge, fx + 28, by + 9);
+            }
+
+            // 3. File name & size
             ctx.fillStyle = "#f4f4f5";
             ctx.font = "10px -apple-system, sans-serif";
-            ctx.fillText(file.name.slice(0, 12), fx + 28, fy + 42);
+            ctx.textAlign = "center";
+            ctx.fillText(file.name.slice(0, 12), fx + 28, fy + 48);
             ctx.fillStyle = "#71717a";
             ctx.font = "9px -apple-system, sans-serif";
-            ctx.fillText(`${file.size || 45} B`, fx + 28, fy + 54);
+            const szText = file.size ? `${(file.size / 1024).toFixed(1)} KB` : "45 B";
+            ctx.fillText(szText, fx + 28, fy + 59);
             ctx.textAlign = "left";
           }
 
@@ -1136,128 +1210,103 @@ export const InteractiveStage = forwardRef<
       }
 
       // 4. macOS Dock (if visible in recRect)
-      const dockW = 260;
-      const dockH = 50;
+      const dockApps = [
+        { kind: "finder", color: "#60a5fa", path: LUCIDE_PATHS.folder },
+        { kind: "iterm", color: "#34d399", path: LUCIDE_PATHS.terminal },
+        { kind: "arc", color: "#818cf8", path: LUCIDE_PATHS.globe },
+        { kind: "quicktime", color: "#fb7185", path: LUCIDE_PATHS.video },
+        { kind: "photobooth", color: "#fbbf24", path: LUCIDE_PATHS.camera },
+      ];
+
+      const iconTileSize = 40;
+      const iconInnerSize = 20;
+      const gap = 8;
+      const padX = 12;
+      const dockW =
+        padX * 2 +
+        dockApps.length * iconTileSize +
+        (dockApps.length - 1) * gap; // 24 + 200 + 32 = 256
+      const dockH = 54;
       const dockX = (STAGE_WIDTH - dockW) / 2 - recRect.x;
-      const dockY = STAGE_HEIGHT - dockH - 12 - recRect.y;
+      const dockY = STAGE_HEIGHT - dockH - 8 - recRect.y;
 
       if (
         dockY < recRect.height &&
         dockX + dockW > 0 &&
         dockX < recRect.width
       ) {
+        // Dock pill glass background
         ctx.save();
-        ctx.shadowColor = "rgba(0, 0, 0, 0.4)";
-        ctx.shadowBlur = 20;
+        ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
+        ctx.shadowBlur = 24;
         ctx.shadowOffsetY = 6;
-        ctx.fillStyle = "rgba(255, 255, 255, 0.15)";
+        ctx.fillStyle = "rgba(0, 0, 0, 0.40)";
         ctx.beginPath();
         ctx.roundRect(dockX, dockY, dockW, dockH, 16);
         ctx.fill();
         ctx.restore();
 
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
+        // Dock pill border
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.20)";
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.roundRect(dockX, dockY, dockW, dockH, 16);
         ctx.stroke();
 
-        const dockApps = [
-          { kind: "finder", color: "#3b82f6", label: "Finder" },
-          { kind: "iterm", color: "#18181b", label: "iTerm" },
-          { kind: "arc", color: "#a855f7", label: "Arc" },
-          { kind: "quicktime", color: "#06b6d4", label: "QuickTime" },
-          { kind: "photobooth", color: "#f59e0b", label: "Photo Booth" },
-        ];
-
-        const iconSize = 34;
-        const gap = 12;
-        const startX =
-          dockX +
-          (dockW - (dockApps.length * iconSize + (dockApps.length - 1) * gap)) /
-            2;
-        const iconY = dockY + (dockH - iconSize) / 2;
+        const startX = dockX + padX;
+        const iconY = dockY + 5;
 
         for (let i = 0; i < dockApps.length; i++) {
           const da = dockApps[i]!;
-          const ix = startX + i * (iconSize + gap);
-          ctx.fillStyle = da.color;
+          const ix = startX + i * (iconTileSize + gap);
+
+          // Tile gradient matching DOM: bg-gradient-to-b from-zinc-700 to-zinc-800
+          const grad = ctx.createLinearGradient(
+            ix,
+            iconY,
+            ix,
+            iconY + iconTileSize,
+          );
+          grad.addColorStop(0, "#3f3f46"); // zinc-700
+          grad.addColorStop(1, "#27272a"); // zinc-800
+          ctx.fillStyle = grad;
           ctx.beginPath();
-          ctx.roundRect(ix, iconY, iconSize, iconSize, 8);
+          ctx.roundRect(ix, iconY, iconTileSize, iconTileSize, 12);
           ctx.fill();
 
-          // Crisp vector dock icons (zero emojis)
-          if (da.kind === "finder") {
-            ctx.strokeStyle = "#ffffff";
-            ctx.lineWidth = 1.75;
-            ctx.lineJoin = "round";
-            ctx.lineCap = "round";
-            const fx = ix + 9;
-            const fy = iconY + 9;
-            ctx.beginPath();
-            ctx.moveTo(fx + 2, fy);
-            ctx.lineTo(fx + 6, fy);
-            ctx.lineTo(fx + 8, fy + 3);
-            ctx.lineTo(fx + 14, fy + 3);
-            ctx.lineTo(fx + 16, fy + 5);
-            ctx.lineTo(fx + 16, fy + 14);
-            ctx.lineTo(fx, fy + 14);
-            ctx.lineTo(fx, fy + 2);
-            ctx.closePath();
-            ctx.stroke();
-          } else if (da.kind === "iterm") {
-            ctx.fillStyle = "#34d399";
-            ctx.font = "bold 13px 'JetBrains Mono', monospace";
-            ctx.textAlign = "center";
-            ctx.fillText(">_", ix + iconSize / 2, iconY + 22);
-            ctx.textAlign = "left";
-          } else if (da.kind === "arc") {
-            ctx.strokeStyle = "#ffffff";
-            ctx.lineWidth = 1.5;
-            const cx = ix + iconSize / 2;
-            const cy = iconY + iconSize / 2;
-            ctx.beginPath();
-            ctx.arc(cx, cy, 8, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.ellipse(cx, cy, 3.5, 8, 0, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(cx - 8, cy);
-            ctx.lineTo(cx + 8, cy);
-            ctx.stroke();
-          } else if (da.kind === "quicktime") {
-            ctx.fillStyle = "#ffffff";
-            const qx = ix + iconSize / 2;
-            const qy = iconY + iconSize / 2;
-            ctx.beginPath();
-            ctx.moveTo(qx - 4, qy - 6);
-            ctx.lineTo(qx + 6, qy);
-            ctx.lineTo(qx - 4, qy + 6);
-            ctx.closePath();
-            ctx.fill();
-          } else if (da.kind === "photobooth") {
-            ctx.strokeStyle = "#ffffff";
-            ctx.lineWidth = 1.5;
-            const px = ix + 8;
-            const py = iconY + 9;
-            ctx.beginPath();
-            ctx.roundRect(px, py + 3, 18, 12, 3);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.arc(px + 9, py + 9, 3, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.fillStyle = "#ffffff";
-            ctx.beginPath();
-            ctx.arc(px + 4, py + 1.5, 1.2, 0, Math.PI * 2);
-            ctx.fill();
-          }
+          // Border matching DOM: border border-white/10
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.roundRect(ix, iconY, iconTileSize, iconTileSize, 12);
+          ctx.stroke();
 
-          const isRunning = wm.getWindows().some((w) => w.appKind === da.kind);
+          // Draw exact Lucide vector icon inside tile
+          const iconOffsetX = ix + (iconTileSize - iconInnerSize) / 2;
+          const iconOffsetY = iconY + (iconTileSize - iconInnerSize) / 2;
+          drawLucideIcon(
+            ctx,
+            da.path,
+            iconOffsetX,
+            iconOffsetY,
+            iconInnerSize,
+            da.color,
+            1.75,
+          );
+
+          const isRunning = wm
+            .getWindows()
+            .some((w) => w.appKind === da.kind && !w.isMinimized);
           if (isRunning) {
-            ctx.fillStyle = "#ffffff";
+            ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
             ctx.beginPath();
-            ctx.arc(ix + iconSize / 2, dockY + dockH - 4, 2, 0, Math.PI * 2);
+            ctx.arc(
+              ix + iconTileSize / 2,
+              iconY + iconTileSize + 4,
+              1.5,
+              0,
+              Math.PI * 2,
+            );
             ctx.fill();
           }
         }
@@ -1432,7 +1481,10 @@ export const InteractiveStage = forwardRef<
         );
       },
       stopRecording: async () => {
-        const durationMs = Date.now() - recordStartTimeRef.current;
+        const startTime = recordStartTimeRef.current;
+        const durationMs =
+          startTime > 0 ? Math.max(100, Date.now() - startTime) : 1000;
+        recordStartTimeRef.current = 0;
         const events = pointerLoggerRef.current?.getEvents() ?? [];
 
         if (recordRafRef.current) {
@@ -1910,24 +1962,40 @@ export const InteractiveStage = forwardRef<
                                 title={info.kind === "video" ? `${f.name} (Click to play in QuickTime)` : f.name}
                               >
                                 {f.isDir ? (
-                                  <Folder size={28} className="text-blue-400" />
+                                  <Folder size={26} className="text-blue-400" />
                                 ) : (
-                                  <div
-                                    className={`rounded px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase shadow-xs ${
-                                      info.badge === "MP4"
-                                        ? "border border-blue-600/50 bg-blue-950/80 text-blue-300"
-                                        : info.badge === "WEBM"
-                                          ? "border border-purple-600/50 bg-purple-950/80 text-purple-300"
-                                          : info.badge === "MOV" || info.badge === "MKV"
-                                            ? "border border-rose-600/50 bg-rose-950/80 text-rose-300"
-                                            : info.badge === "AUDIO"
-                                              ? "border border-amber-600/50 bg-amber-950/80 text-amber-300"
-                                              : info.badge === "IMG"
-                                                ? "border border-emerald-600/50 bg-emerald-950/80 text-emerald-300"
-                                                : "border border-zinc-700 bg-zinc-800 text-zinc-400"
-                                    }`}
-                                  >
-                                    {info.badge}
+                                  <div className="flex flex-col items-center gap-1">
+                                    {info.kind === "video" && (
+                                      <Film size={26} className="text-purple-400" />
+                                    )}
+                                    {info.kind === "audio" && (
+                                      <Music size={26} className="text-amber-400" />
+                                    )}
+                                    {info.kind === "image" && (
+                                      <ImageIcon size={26} className="text-emerald-400" />
+                                    )}
+                                    {info.kind !== "video" &&
+                                      info.kind !== "audio" &&
+                                      info.kind !== "image" && (
+                                        <FileText size={26} className="text-zinc-400" />
+                                      )}
+                                    <div
+                                      className={`rounded px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase shadow-xs ${
+                                        info.badge === "MP4"
+                                          ? "border border-blue-600/50 bg-blue-950/80 text-blue-300"
+                                          : info.badge === "WEBM"
+                                            ? "border border-purple-600/50 bg-purple-950/80 text-purple-300"
+                                            : info.badge === "MOV" || info.badge === "MKV"
+                                              ? "border border-rose-600/50 bg-rose-950/80 text-rose-300"
+                                              : info.badge === "AUDIO"
+                                                ? "border border-amber-600/50 bg-amber-950/80 text-amber-300"
+                                                : info.badge === "IMG"
+                                                  ? "border border-emerald-600/50 bg-emerald-950/80 text-emerald-300"
+                                                  : "border border-zinc-700 bg-zinc-800 text-zinc-400"
+                                      }`}
+                                    >
+                                      {info.badge}
+                                    </div>
                                   </div>
                                 )}
                                 <span className="mt-1 w-full truncate text-center text-[11px] font-medium text-zinc-200 group-hover:text-white">

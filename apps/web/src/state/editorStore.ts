@@ -11,6 +11,7 @@ import type {
   ProjectDocument,
   Track,
 } from "@cutaway/types";
+import { DESKTOP_CONTENT_TYPES } from "@cutaway/types";
 import {
   computeDuration,
   moveClip,
@@ -20,7 +21,7 @@ import {
 } from "@cutaway/timeline-engine";
 import { retimeBlock, shiftBlock } from "@cutaway/caption-engine";
 import { createClipForAsset, trackKindForAsset } from "@cutaway/media-engine";
-import { createId, createTrack } from "@cutaway/utils";
+import { createClip, createId, createTrack } from "@cutaway/utils";
 import {
   createDesktopTrack,
   createStarterProject,
@@ -606,7 +607,35 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
       const clipId = `clip-track-mouse-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       createdClipId = clipId;
 
-      const clip = createTrackMouseClip({
+      const buildClip =
+        typeof createTrackMouseClip === "function"
+          ? createTrackMouseClip
+          : (opts: {
+              id: string;
+              trackId: string;
+              startFrame: number;
+              durationFrames: number;
+              zoom?: number;
+              smoothingMs?: number;
+            }) =>
+              createClip({
+                id: opts.id,
+                name: "Track Mouse",
+                trackId: opts.trackId,
+                startFrame: opts.startFrame,
+                durationFrames: opts.durationFrames,
+                content: {
+                  kind: "plugin",
+                  contentType: DESKTOP_CONTENT_TYPES.action,
+                  data: {
+                    action: "trackMouse",
+                    zoom: opts.zoom ?? 1.5,
+                    smoothingMs: opts.smoothingMs ?? 180,
+                  },
+                },
+              });
+
+      const clip = buildClip({
         id: clipId,
         trackId: actionTrack.id,
         startFrame,

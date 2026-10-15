@@ -161,10 +161,20 @@ export function PreviewPanel() {
         setTrackFlag("track-desktop", "hidden", true);
       }
 
-      setLastTake(manifest);
+      // Sanitize duration to prevent uninitialized epoch timestamps
+      const sanitizedDurationMs =
+        manifest.durationMs > 86400000 || manifest.durationMs <= 0
+          ? 1000
+          : manifest.durationMs;
+      const sanitizedManifest: StageTakeManifest = {
+        ...manifest,
+        durationMs: sanitizedDurationMs,
+      };
+
+      setLastTake(sanitizedManifest);
 
       setTakeNotice(
-        `Take recorded (${(manifest.durationMs / 1000).toFixed(1)}s) added to timeline`,
+        `Take recorded (${(sanitizedDurationMs / 1000).toFixed(1)}s) added to timeline`,
       );
       setTimeout(() => setTakeNotice(null), 5000);
 

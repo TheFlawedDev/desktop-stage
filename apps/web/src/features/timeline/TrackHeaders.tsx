@@ -31,7 +31,6 @@ export function TrackHeaders() {
   );
   const setTrackFlag = useEditorStore((state) => state.setTrackFlag);
   const addTrack = useEditorStore((state) => state.addTrack);
-  const addTrackMouseAction = useEditorStore((state) => state.addTrackMouseAction);
   const removeCaptionTrack = useEditorStore((state) => state.removeCaptionTrack);
 
   return (
@@ -127,16 +126,6 @@ export function TrackHeaders() {
           )}
         >
           <Plus size={12} /> Audio
-        </button>
-        <button
-          onClick={() => addTrackMouseAction()}
-          title="Add Track Mouse action clip at current playhead"
-          className={cn(
-            "border-emerald-600/40 bg-emerald-950/20 text-emerald-400 text-2xs flex w-full items-center justify-center gap-1 rounded-sm border py-1 font-medium",
-            "duration-fast hover:border-emerald-500 hover:bg-emerald-950/40 hover:text-emerald-300 transition-colors",
-          )}
-        >
-          <Plus size={12} /> Track Mouse
         </button>
       </div>
     </div>
