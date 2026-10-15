@@ -3,7 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { Frame, Id } from "@cutaway/types";
-import { DEFAULT_SNAP_THRESHOLD_PX, snapClipDrag, snapFrame } from "@cutaway/timeline-engine";
+import {
+  DEFAULT_SNAP_THRESHOLD_PX,
+  snapClipDrag,
+  snapFrame,
+  trimClipStart,
+  trimClipEnd,
+} from "@cutaway/timeline-engine";
 import {
   hitTestCaptionBlock,
   hitTestClip,
@@ -67,6 +73,11 @@ type DragMode =
       kind: "trim-caption";
       trackId: Id;
       blockId: Id;
+      edge: "start" | "end";
+    }
+  | {
+      kind: "trim-clip";
+      clipId: Id;
       edge: "start" | "end";
     };
 
@@ -310,6 +321,15 @@ export function TimelineCanvas() {
 
       if (clip.locked) return;
 
+      if (hit.zone === "trim-start" || hit.zone === "trim-end") {
+        dragRef.current = {
+          kind: "trim-clip",
+          clipId: hit.clipId,
+          edge: hit.zone === "trim-start" ? "start" : "end",
+        };
+        return;
+      }
+
       dragRef.current = {
         kind: "move-clip",
         clipId: hit.clipId,
@@ -330,7 +350,24 @@ export function TimelineCanvas() {
   const handlePointerMove = useCallback(
     (event: React.PointerEvent<HTMLCanvasElement>) => {
       const drag = dragRef.current;
-      if (drag.kind === "none") return;
+      if (drag.kind === "none") {
+        const { x, y } = localPoint(event);
+        const clipHit = hitTestClip(x, y, clipRectsRef.current);
+        const captionHit = hitTestCaptionBlock(x, y, captionRectsRef.current);
+        if (
+          (clipHit && (clipHit.zone === "trim-start" || clipHit.zone === "trim-end")) ||
+          (captionHit && (captionHit.zone === "trim-start" || captionHit.zone === "trim-end"))
+        ) {
+          event.currentTarget.style.cursor = "ew-resize";
+        } else if (clipHit || captionHit) {
+          event.currentTarget.style.cursor = "grab";
+        } else if (y <= RULER_HEIGHT) {
+          event.currentTarget.style.cursor = "pointer";
+        } else {
+          event.currentTarget.style.cursor = "default";
+        }
+        return;
+      }
 
       const { x, y } = localPoint(event);
       const viewport = viewportNow();
@@ -398,6 +435,34 @@ export function TimelineCanvas() {
         }
         setSnapGuideFrame(guide);
         trimCaptionBlock(drag.trackId, drag.blockId, drag.edge, target);
+        return;
+      }
+
+      if (drag.kind === "trim-clip") {
+        let target = Math.max(0, frame);
+        let guide: Frame | null = null;
+        if (snapEnabled) {
+          const result = snapFrame(frame, {
+            clips,
+            markers,
+            playhead,
+            excludeClipIds: new Set([drag.clipId]),
+            pixelsPerFrame,
+            thresholdPx: DEFAULT_SNAP_THRESHOLD_PX,
+          });
+          target = Math.max(0, result.frame);
+          guide = result.target ? result.target.frame : null;
+        }
+        setSnapGuideFrame(guide);
+        updateClip(
+          drag.clipId,
+          (clip) =>
+            (drag.edge === "start"
+              ? trimClipStart(clip, target)
+              : trimClipEnd(clip, target)) ?? clip,
+          "Trim clip",
+          `clip-trim:${drag.clipId}`,
+        );
         return;
       }
 
@@ -479,6 +544,7 @@ export function TimelineCanvas() {
       // and the next drag starts a new one.
       if (
         dragRef.current.kind === "move-clip" ||
+        dragRef.current.kind === "trim-clip" ||
         dragRef.current.kind === "move-keyframe" ||
         dragRef.current.kind === "move-caption" ||
         dragRef.current.kind === "trim-caption"

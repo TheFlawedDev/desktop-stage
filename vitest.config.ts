@@ -32,6 +32,8 @@ const alias: Record<string, string> = Object.fromEntries(
   ]),
 );
 alias["@desktop-stage/desktop-engine"] = `${root}packages/desktop-engine/src/index.ts`;
+alias["@/"] = `${root}apps/web/src/`;
+alias["@"] = `${root}apps/web/src`;
 
 export default defineConfig({
   resolve: {

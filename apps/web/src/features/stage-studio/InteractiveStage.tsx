@@ -31,7 +31,12 @@ import {
   Film,
   Music,
   FileText,
+  Search,
+  Compass,
+  Loader2,
 } from "lucide-react";
+import { useMediaImportContext } from "@/features/media/MediaImportProvider";
+import { useEditorStore } from "@/state/editorStore";
 import {
   StageWindowManager,
   MemoryVirtualFileSystem,
@@ -265,6 +270,9 @@ export const InteractiveStage = forwardRef<
   const [terminalInput, setTerminalInput] = useState("");
   const [terminalCwd, setTerminalCwd] = useState("/");
 
+  // Media store context for drag & drop ingestion
+  const { store } = useMediaImportContext();
+
   // Wallpaper state
   const [wallpaper, setWallpaper] = useState<string>("royal-blue-nebula");
   const [customWallpaperUrl, setCustomWallpaperUrl] = useState<string | null>(null);
@@ -272,12 +280,23 @@ export const InteractiveStage = forwardRef<
   const wallpaperFileInputRef = useRef<HTMLInputElement>(null);
   const [showWallpaperPicker, setShowWallpaperPicker] = useState(false);
 
+  useEffect(() => {
+    if (customWallpaperUrl) {
+      const img = new Image();
+      img.src = customWallpaperUrl;
+      img.onload = () => {
+        customWallpaperImgRef.current = img;
+      };
+    }
+  }, [customWallpaperUrl]);
+
   // Finder state & Drag-and-drop media ingestion
   const [finderFiles, setFinderFiles] = useState<
     Array<{ name: string; isDir: boolean; size: number }>
   >([]);
   const [newFileName, setNewFileName] = useState("");
   const [isDraggingOverFinder, setIsDraggingOverFinder] = useState(false);
+  const finderDragCounterRef = useRef(0);
   const mediaRegistryRef = useRef<
     Map<string, { url: string; file?: File; kind: string; badge: string }>
   >(new Map());
@@ -291,9 +310,17 @@ export const InteractiveStage = forwardRef<
   const [quickTimeDuration, setQuickTimeDuration] = useState(0);
 
   // Arc Browser state
+  interface ArcSearchResult {
+    title: string;
+    url: string;
+    snippet: string;
+  }
   const [arcUrl, setArcUrl] = useState("https://en.m.wikipedia.org");
   const [arcActiveUrl, setArcActiveUrl] = useState("https://en.m.wikipedia.org");
   const [arcReaderMode, setArcReaderMode] = useState(false);
+  const [arcSearchResults, setArcSearchResults] = useState<ArcSearchResult[] | null>(null);
+  const [isArcSearching, setIsArcSearching] = useState(false);
+  const [arcSearchQuery, setArcSearchQuery] = useState("");
 
   // Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -658,11 +685,53 @@ export const InteractiveStage = forwardRef<
     }
   };
 
-  // Finder drag & drop handler for media files from host OS
+  // Finder drag & drop handler for media files from host OS or Cutaway Media panel
   const handleFinderDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDraggingOverFinder(false);
+    finderDragCounterRef.current = 0;
+
+    // Check for internal Cutaway media asset drag from Media panel
+    const mediaId = e.dataTransfer.getData("application/cutaway-media-id");
+    if (mediaId) {
+      const asset = useEditorStore.getState().project.entities.media[mediaId];
+      if (asset) {
+        try {
+          let blob: Blob | null = null;
+          if (asset.source.type === "indexeddb") {
+            blob = await store().get(asset.source.key);
+          }
+          if (blob) {
+            const file = new File([blob], asset.name, {
+              type: asset.mimeType || "video/mp4",
+            });
+            const url = URL.createObjectURL(file);
+            const info = classifyMediaFile(file.name);
+            mediaRegistryRef.current.set(file.name, {
+              url,
+              file,
+              kind: info.kind,
+              badge: info.badge,
+            });
+            await vfs.writeFile(
+              `/${file.name}`,
+              `[Imported ${info.badge} file: ${file.name} (${file.size} bytes)]\n`,
+            );
+            await refreshFinder();
+            stageDiagnostics.log(
+              "SHELL",
+              `Ingested media asset ${asset.name} from Media panel into Finder`,
+            );
+            return;
+          }
+        } catch (err) {
+          console.error("Failed to ingest media asset from store:", err);
+        }
+      }
+    }
+
+    // Check for OS files dropped from host desktop/explorer
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
 
@@ -711,21 +780,63 @@ export const InteractiveStage = forwardRef<
     }
   };
 
-  // Arc navigation with DuckDuckGo fallback
+  const performArcSearch = async (query: string) => {
+    setIsArcSearching(true);
+    setArcSearchResults([]);
+    setArcReaderMode(false);
+    try {
+      // Fetch live open search results from Wikipedia (CORS friendly)
+      const wikiUrl = `https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(query)}&limit=8&namespace=0&format=json&origin=*`;
+      const res = await fetch(wikiUrl);
+      const data = await res.json();
+      const titles = (data[1] || []) as string[];
+      const snippets = (data[2] || []) as string[];
+      const urls = (data[3] || []) as string[];
+
+      const results: ArcSearchResult[] = titles.map((title, idx) => ({
+        title,
+        snippet: snippets[idx] || `Read about ${title} and related topics.`,
+        url: urls[idx] || `https://en.m.wikipedia.org/wiki/${encodeURIComponent(title)}`,
+      }));
+
+      // Add a web proxy search option
+      results.push({
+        title: `Search Web for "${query}"`,
+        snippet: `Browse comprehensive web results for "${query}" with proxy bypass.`,
+        url: `/api/proxy?url=${encodeURIComponent(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`)}`,
+      });
+
+      setArcSearchResults(results);
+    } catch {
+      setArcSearchResults([
+        {
+          title: `Web search: "${query}"`,
+          snippet: `Browse results for "${query}" via embed proxy.`,
+          url: `/api/proxy?url=${encodeURIComponent(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`)}`,
+        },
+      ]);
+    } finally {
+      setIsArcSearching(false);
+    }
+  };
+
+  // Arc navigation with smart search and proxy support
   const handleArcNavigate = (input: string) => {
     const trimmed = input.trim();
     if (!trimmed) return;
-    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("/api/proxy")) {
       setArcUrl(trimmed);
       setArcActiveUrl(trimmed);
+      setArcSearchResults(null);
     } else if (trimmed.includes(".") && !trimmed.includes(" ")) {
       const url = `https://${trimmed}`;
       setArcUrl(url);
       setArcActiveUrl(url);
+      setArcSearchResults(null);
     } else {
-      const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(trimmed)}`;
       setArcUrl(trimmed);
-      setArcActiveUrl(searchUrl);
+      setArcSearchQuery(trimmed);
+      void performArcSearch(trimmed);
     }
     setArcReaderMode(false);
   };
@@ -1024,16 +1135,22 @@ export const InteractiveStage = forwardRef<
           ctx.fillText("⟳ Refresh", rx + rw - 12, cy + 18);
           ctx.textAlign = "left";
 
-          // File items grid
+          // File items grid matching DOM 3-column grid
           const files = finderFilesRef.current;
-          const itemStartX = rx + 16;
-          const itemStartY = cy + fhH + 12;
+          const cols = 3;
+          const colGap = 8;
+          const gridPadding = 12;
+          const availableW = rw - gridPadding * 2;
+          const colWidth = Math.floor((availableW - (cols - 1) * colGap) / cols);
+          const itemStartX = rx + gridPadding;
+          const itemStartY = cy + fhH + 10;
           for (let i = 0; i < files.length; i++) {
             const file = files[i]!;
-            const col = i % 4;
-            const row = Math.floor(i / 4);
-            const fx = itemStartX + col * 90;
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const fx = itemStartX + col * (colWidth + colGap);
             const fy = itemStartY + row * 82;
+            const centerX = fx + colWidth / 2;
             if (fy + 72 > ry + rh - 30) break;
 
             // File media badges
@@ -1074,14 +1191,14 @@ export const InteractiveStage = forwardRef<
               iconColor = "#34d399";
             }
 
-            drawLucideIcon(ctx, iconPath, fx + 15, fy, 26, iconColor, 1.75);
+            drawLucideIcon(ctx, iconPath, centerX - 13, fy + 2, 26, iconColor, 1.75);
 
             // 2. Draw format pill badge for files
             if (!file.isDir) {
               const badgeW = 34;
               const badgeH = 12;
-              const bx = fx + 28 - badgeW / 2;
-              const by = fy + 28;
+              const bx = centerX - badgeW / 2;
+              const by = fy + 30;
               ctx.fillStyle = badgeBg;
               ctx.beginPath();
               ctx.roundRect(bx, by, badgeW, badgeH, 3);
@@ -1090,20 +1207,22 @@ export const InteractiveStage = forwardRef<
               ctx.stroke();
 
               ctx.fillStyle = badgeText;
-              ctx.font = "bold 8px monospace";
+              ctx.font = "bold 8.5px monospace";
               ctx.textAlign = "center";
-              ctx.fillText(mediaInfo.badge, fx + 28, by + 9);
+              ctx.fillText(mediaInfo.badge, centerX, by + 9);
             }
 
             // 3. File name & size
-            ctx.fillStyle = "#f4f4f5";
-            ctx.font = "10px -apple-system, sans-serif";
+            ctx.fillStyle = "#e4e4e7";
+            ctx.font = "500 11px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
             ctx.textAlign = "center";
-            ctx.fillText(file.name.slice(0, 12), fx + 28, fy + 48);
+            const maxChars = Math.max(8, Math.floor(colWidth / 7));
+            const displayName = file.name.length > maxChars ? `${file.name.slice(0, maxChars - 1)}…` : file.name;
+            ctx.fillText(displayName, centerX, fy + 52);
             ctx.fillStyle = "#71717a";
-            ctx.font = "9px -apple-system, sans-serif";
+            ctx.font = "9px -apple-system, BlinkMacSystemFont, sans-serif";
             const szText = file.size ? `${(file.size / 1024).toFixed(1)} KB` : "45 B";
-            ctx.fillText(szText, fx + 28, fy + 59);
+            ctx.fillText(szText, centerX, fy + 65);
             ctx.textAlign = "left";
           }
 
@@ -1912,21 +2031,35 @@ export const InteractiveStage = forwardRef<
                 {/* Finder File Explorer */}
                 {win.appKind === "finder" && (
                   <div
+                    onDragEnter={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      finderDragCounterRef.current += 1;
+                      setIsDraggingOverFinder(true);
+                    }}
                     onDragOver={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
+                      e.dataTransfer.dropEffect = "copy";
                       setIsDraggingOverFinder(true);
                     }}
                     onDragLeave={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
-                      setIsDraggingOverFinder(false);
+                      finderDragCounterRef.current -= 1;
+                      if (finderDragCounterRef.current <= 0) {
+                        finderDragCounterRef.current = 0;
+                        setIsDraggingOverFinder(false);
+                      }
                     }}
-                    onDrop={handleFinderDrop}
+                    onDrop={(e) => {
+                      finderDragCounterRef.current = 0;
+                      handleFinderDrop(e);
+                    }}
                     className="relative flex h-full flex-col text-xs"
                   >
                     {isDraggingOverFinder && (
-                      <div className="absolute inset-0 z-30 flex flex-col items-center justify-center rounded-md border-2 border-dashed border-blue-400 bg-blue-950/85 p-4 text-center backdrop-blur-xs">
+                      <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-center rounded-md border-2 border-dashed border-blue-400 bg-blue-950/85 p-4 text-center backdrop-blur-xs select-none">
                         <Upload size={32} className="mb-2 text-blue-300 animate-bounce" />
                         <p className="text-xs font-semibold text-white">Drop media files here</p>
                         <p className="text-[10px] text-blue-300">Videos (.mp4, .webm, .mov), Audio, Images</p>
@@ -2049,13 +2182,31 @@ export const InteractiveStage = forwardRef<
                           type="text"
                           value={arcUrl}
                           onChange={(e) => setArcUrl(e.target.value)}
-                          placeholder="Search DuckDuckGo or enter URL (e.g. wikipedia.org)..."
+                          placeholder="Search anything or enter URL (e.g. wikipedia.org, react)..."
                           className="flex-1 bg-transparent text-xs text-zinc-100 focus:outline-none"
                         />
-                        <button type="submit" className="text-zinc-400 hover:text-white">
-                          <ArrowRight size={12} />
-                        </button>
+                        {isArcSearching ? (
+                          <Loader2 size={12} className="animate-spin text-indigo-400" />
+                        ) : (
+                          <button type="submit" className="text-zinc-400 hover:text-white" title="Search or Go">
+                            <ArrowRight size={12} />
+                          </button>
+                        )}
                       </form>
+
+                      {arcSearchQuery && (
+                        <button
+                          onClick={() => void performArcSearch(arcSearchQuery)}
+                          className={`flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium border transition-colors ${
+                            arcSearchResults !== null
+                              ? "border-indigo-500/50 bg-indigo-600/30 text-indigo-300"
+                              : "border-zinc-700 bg-zinc-800 text-zinc-400 hover:text-zinc-200"
+                          }`}
+                          title="Search results"
+                        >
+                          <Search size={11} /> Search
+                        </button>
+                      )}
 
                       <button
                         onClick={() => setArcReaderMode((prev) => !prev)}
@@ -2075,10 +2226,16 @@ export const InteractiveStage = forwardRef<
                       <span className="shrink-0 font-medium text-zinc-500">Bookmarks:</span>
                       {[
                         { name: "Wikipedia", url: "https://en.m.wikipedia.org" },
-                        { name: "DuckDuckGo", url: "https://html.duckduckgo.com" },
+                        {
+                          name: "DuckDuckGo",
+                          url: `/api/proxy?url=${encodeURIComponent("https://html.duckduckgo.com/html/")}`,
+                        },
                         { name: "DevDocs", url: "https://devdocs.io" },
                         { name: "Example Domain", url: "https://example.com" },
-                        { name: "Hacker News", url: "https://news.ycombinator.com" },
+                        {
+                          name: "Hacker News",
+                          url: `/api/proxy?url=${encodeURIComponent("https://news.ycombinator.com")}`,
+                        },
                       ].map((bm) => (
                         <button
                           key={bm.name}
@@ -2086,6 +2243,7 @@ export const InteractiveStage = forwardRef<
                             setArcUrl(bm.url);
                             setArcActiveUrl(bm.url);
                             setArcReaderMode(false);
+                            setArcSearchResults(null);
                           }}
                           className="shrink-0 rounded bg-zinc-800/80 px-1.5 py-0.5 hover:bg-zinc-700 hover:text-zinc-200 transition-colors"
                         >
@@ -2094,9 +2252,84 @@ export const InteractiveStage = forwardRef<
                       ))}
                     </div>
 
-                    {/* Webview Content */}
-                    <div className="relative flex-1 overflow-hidden bg-white">
-                      {arcReaderMode ? (
+                    {/* Webview Content: Search Results, Reader Mode, or Sandboxed Iframe */}
+                    <div className="relative flex-1 overflow-hidden bg-zinc-950">
+                      {isArcSearching ? (
+                        <div className="flex h-full flex-col items-center justify-center p-8 text-center bg-zinc-950">
+                          <Loader2 size={32} className="animate-spin text-indigo-400 mb-3" />
+                          <h3 className="text-sm font-semibold text-white">Searching the web…</h3>
+                          <p className="text-xs text-zinc-400 mt-1 font-mono">{arcSearchQuery}</p>
+                        </div>
+                      ) : arcSearchResults !== null ? (
+                        <div className="h-full overflow-y-auto p-4 space-y-3 bg-zinc-950 text-zinc-200">
+                          <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
+                            <div className="flex items-center gap-2">
+                              <Search size={14} className="text-indigo-400" />
+                              <span className="font-semibold text-white text-xs">
+                                Results for <span className="text-indigo-300 font-mono">"{arcSearchQuery}"</span>
+                              </span>
+                              <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400">
+                                {arcSearchResults.length} found
+                              </span>
+                            </div>
+                            <span className="text-[10px] text-zinc-500">Live Search & Proxy</span>
+                          </div>
+
+                          <div className="space-y-2.5">
+                            {arcSearchResults.map((res, i) => (
+                              <div
+                                key={i}
+                                className="group rounded-md border border-zinc-800 bg-zinc-900/90 p-3 hover:border-indigo-500/50 hover:bg-zinc-900 transition-all shadow-xs"
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0 flex-1">
+                                    <h4
+                                      onClick={() => {
+                                        setArcActiveUrl(res.url);
+                                        setArcUrl(res.url);
+                                        setArcSearchResults(null);
+                                      }}
+                                      className="font-medium text-xs text-indigo-300 hover:text-indigo-200 hover:underline cursor-pointer truncate"
+                                    >
+                                      {res.title}
+                                    </h4>
+                                    <p className="mt-1 text-[11px] leading-relaxed text-zinc-400 line-clamp-2">
+                                      {res.snippet}
+                                    </p>
+                                    <span className="mt-1.5 block font-mono text-[9px] text-zinc-500 truncate">
+                                      {res.url}
+                                    </span>
+                                  </div>
+
+                                  <div className="flex shrink-0 items-center gap-1.5">
+                                    <button
+                                      onClick={() => {
+                                        setArcActiveUrl(res.url);
+                                        setArcUrl(res.url);
+                                        setArcSearchResults(null);
+                                      }}
+                                      className="rounded bg-indigo-600/30 px-2 py-1 text-[10px] font-medium text-indigo-300 hover:bg-indigo-600/50 transition-colors"
+                                    >
+                                      Open
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        setArcActiveUrl(res.url);
+                                        setArcReaderMode(true);
+                                        setArcSearchResults(null);
+                                      }}
+                                      className="rounded bg-zinc-800 px-2 py-1 text-[10px] font-medium text-zinc-400 hover:text-zinc-200 transition-colors"
+                                      title="Read in distraction-free Reader View"
+                                    >
+                                      <BookOpen size={10} />
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : arcReaderMode ? (
                         <div className="h-full overflow-auto bg-zinc-900 p-4 text-zinc-200">
                           <h2 className="mb-2 text-base font-bold text-white">Arc Reader View</h2>
                           <p className="mb-3 font-mono text-xs text-zinc-400">{arcActiveUrl}</p>

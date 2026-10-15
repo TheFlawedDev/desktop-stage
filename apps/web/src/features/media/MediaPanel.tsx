@@ -160,7 +160,15 @@ function MediaCard({
   const Icon = asset.kind === "audio" ? FileAudio : asset.kind === "video" ? Film : ImageIcon;
 
   return (
-    <li className="group relative">
+    <li
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData("application/cutaway-media-id", asset.id);
+        e.dataTransfer.setData("text/plain", asset.name);
+        e.dataTransfer.effectAllowed = "copyMove";
+      }}
+      className="group relative cursor-grab active:cursor-grabbing"
+    >
       <button
         onClick={() => addClipFromAsset(asset.id)}
         title={`Add ${asset.name} to timeline`}

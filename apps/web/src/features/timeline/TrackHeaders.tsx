@@ -7,6 +7,7 @@ import {
   Lock,
   LockOpen,
   Plus,
+  Sparkles,
   Trash2,
   Volume2,
   VolumeX,
@@ -31,6 +32,7 @@ export function TrackHeaders() {
   );
   const setTrackFlag = useEditorStore((state) => state.setTrackFlag);
   const addTrack = useEditorStore((state) => state.addTrack);
+  const addTrackMouseAction = useEditorStore((state) => state.addTrackMouseAction);
   const removeCaptionTrack = useEditorStore((state) => state.removeCaptionTrack);
 
   return (
@@ -126,6 +128,24 @@ export function TrackHeaders() {
           )}
         >
           <Plus size={12} /> Audio
+        </button>
+        <button
+          onClick={() => {
+            const playhead = useEditorStore.getState().playhead;
+            const fps = useEditorStore.getState().project.settings.frameRate;
+            addTrackMouseAction({
+              startFrame: playhead,
+              durationFrames: Math.max(1, Math.round(5 * fps)),
+              zoom: 1.5,
+            });
+          }}
+          className={cn(
+            "border-border-default bg-surface-raised text-text-secondary text-2xs flex w-full items-center justify-center gap-1 rounded-sm border py-1 whitespace-nowrap",
+            "duration-fast hover:border-emerald-500 hover:text-emerald-400 transition-colors",
+          )}
+          title="Add Track Mouse action clip to the Actions track at playhead"
+        >
+          <Sparkles size={12} className="text-emerald-400" /> + Track Mouse
         </button>
       </div>
     </div>

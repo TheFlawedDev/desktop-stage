@@ -136,8 +136,8 @@ export function PreviewPanel() {
     if (!stageRef.current) return;
     stageDiagnostics.log("UI", "User stopped recording");
     try {
-      const { blob, manifest } = await stageRef.current.stopRecording();
-      await handleTakeRecorded(blob, manifest);
+      // stopRecording() internally invokes onTakeRecorded?.(blob, manifest) which triggers handleTakeRecorded
+      await stageRef.current.stopRecording();
     } catch (err) {
       console.error("Error stopping recording:", err);
     }
@@ -152,14 +152,6 @@ export function PreviewPanel() {
         type: "video/webm",
       });
       const asset = await importFile(takeFile, { store: store() });
-      addMediaAssets([asset]);
-      addClipFromAsset(asset.id);
-
-      // Hide starter desktop wireframe track if present so the recorded take video is fully visible
-      const tracks = useEditorStore.getState().project.entities.tracks;
-      if (tracks["track-desktop"]) {
-        setTrackFlag("track-desktop", "hidden", true);
-      }
 
       // Sanitize duration to prevent uninitialized epoch timestamps
       const sanitizedDurationMs =
@@ -172,6 +164,18 @@ export function PreviewPanel() {
       };
 
       setLastTake(sanitizedManifest);
+
+      // Explicitly set the real take duration in seconds from the recorder manifest
+      // so addClipFromAsset creates a clip matching the real recording length
+      asset.metadata.durationSeconds = sanitizedDurationMs / 1000;
+      addMediaAssets([asset]);
+      addClipFromAsset(asset.id);
+
+      // Hide starter desktop wireframe track if present so the recorded take video is fully visible
+      const tracks = useEditorStore.getState().project.entities.tracks;
+      if (tracks["track-desktop"]) {
+        setTrackFlag("track-desktop", "hidden", true);
+      }
 
       setTakeNotice(
         `Take recorded (${(sanitizedDurationMs / 1000).toFixed(1)}s) added to timeline`,
@@ -280,25 +284,40 @@ export function PreviewPanel() {
                   : undefined
               }
             >
-              {stageSize.width > 0 &&
-                (workspaceMode === "interactive" ? (
-                  <InteractiveStage
-                    ref={stageRef}
-                    width={stageSize.width}
-                    height={stageSize.height}
-                    onTakeRecorded={handleTakeRecorded}
-                    onRecordingStatusChange={handleRecordingStatusChange}
-                    selectedCrop={selectedCrop}
-                    onCropChange={setSelectedCrop}
-                    recordingMode={recordingMode}
-                    onRecordingModeChange={setRecordingMode}
-                  />
-                ) : (
-                  <PreviewStage
-                    width={stageSize.width}
-                    height={stageSize.height}
-                  />
-                ))}
+              {stageSize.width > 0 && (
+                <>
+                  <div
+                    className="absolute inset-0 flex items-center justify-center"
+                    style={{
+                      display: workspaceMode === "interactive" ? "flex" : "none",
+                    }}
+                  >
+                    <InteractiveStage
+                      ref={stageRef}
+                      width={stageSize.width}
+                      height={stageSize.height}
+                      onTakeRecorded={handleTakeRecorded}
+                      onRecordingStatusChange={handleRecordingStatusChange}
+                      selectedCrop={selectedCrop}
+                      onCropChange={setSelectedCrop}
+                      recordingMode={recordingMode}
+                      onRecordingModeChange={setRecordingMode}
+                    />
+                  </div>
+
+                  <div
+                    className="absolute inset-0 flex items-center justify-center"
+                    style={{
+                      display: workspaceMode === "preview" ? "flex" : "none",
+                    }}
+                  >
+                    <PreviewStage
+                      width={stageSize.width}
+                      height={stageSize.height}
+                    />
+                  </div>
+                </>
+              )}
 
               {workspaceMode === "preview" && showGuides && <SafeGuides />}
               {workspaceMode === "preview" && isEmpty && <StartHint />}
@@ -334,29 +353,6 @@ export function PreviewPanel() {
                 {lastTake.pointerEvents.length} events
               </span>
             </div>
-
-            <button
-              onClick={() => {
-                const durFrames = Math.max(
-                  1,
-                  Math.round((lastTake.durationMs / 1000) * fps),
-                );
-                addTrackMouseAction({
-                  startFrame: 0,
-                  durationFrames: durFrames,
-                  zoom: 1.5,
-                });
-                setTakeNotice(
-                  "Track Mouse action added to Actions track on timeline",
-                );
-                setTimeout(() => setTakeNotice(null), 4000);
-              }}
-              className="flex items-center gap-1.5 rounded px-2.5 py-1 text-2xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 shadow-xs transition-all cursor-pointer"
-              title="Add Track Mouse action clip to the Actions track on the timeline"
-            >
-              <Sparkles size={12} className="fill-current" />
-              + Add Track Mouse Action to Timeline
-            </button>
 
             {activeCamera.active ? (
               <span className="flex items-center gap-1 text-2xs font-medium text-emerald-400">

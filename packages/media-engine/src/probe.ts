@@ -130,9 +130,26 @@ export async function probeMedia(file: File): Promise<MediaMetadata> {
       case "video":
         return await withObjectURL(file, async (url) => {
           const video = await loadVideoElement(url);
+          let durationSeconds = Number.isFinite(video.duration) ? video.duration : 0;
+          if (durationSeconds === 0 && video.duration === Infinity) {
+            try {
+              durationSeconds = await new Promise<number>((resolve) => {
+                const timer = setTimeout(() => resolve(0), 1200);
+                video.ontimeupdate = () => {
+                  video.ontimeupdate = null;
+                  clearTimeout(timer);
+                  const dur = video.duration;
+                  resolve(Number.isFinite(dur) ? dur : video.currentTime);
+                };
+                video.currentTime = 1e101;
+              });
+            } catch {
+              durationSeconds = 0;
+            }
+          }
           return {
             ...base,
-            durationSeconds: Number.isFinite(video.duration) ? video.duration : 0,
+            durationSeconds,
             dimensions: { width: video.videoWidth, height: video.videoHeight },
             hasVideo: video.videoWidth > 0,
             hasAudio: detectAudioTrack(video),
