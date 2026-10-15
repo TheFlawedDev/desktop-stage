@@ -19,6 +19,7 @@ import {
   Layers,
   Plus,
   RefreshCw,
+  ArrowLeft,
   ArrowRight,
   Maximize2,
   Sliders,
@@ -63,22 +64,6 @@ export const STAGE_HEIGHT = 720;
 export const APPLE_SVG_PATH =
   "M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.75 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.7-3.07-7.74-7.89-12.13-14.46-6.4-9.61-11.45-20.89-15.15-33.84-3.71-12.94-5.56-25.29-5.56-37.04 0-14.92 3.65-27.18 10.95-36.78 7.3-9.6 16.48-14.49 27.54-14.68 5.65 0 11.48 1.48 17.5 4.45 6.01 2.97 10.15 4.51 12.41 4.63 2.05-.12 6.3-1.74 12.74-4.87 6.44-3.12 12.39-4.59 17.85-4.4 13.68.75 24.62 5.61 32.81 14.58-11.97 7.27-17.85 17.38-17.65 30.34.2 10.19 4.1 18.66 11.69 25.4 7.6 6.74 16.63 10.5 27.1 11.28-2.6 7.65-5.91 15.54-9.92 23.68zM119.22 32.6c0-7.39 2.65-14.19 7.96-20.4 5.3-6.21 11.75-10.37 19.34-12.48.42 2.05.63 3.99.63 5.82 0 7.38-2.73 14.32-8.19 20.83-5.46 6.5-12.01 10.4-19.64 11.71-.1-.83-.1-1.83-.1-5.48z";
 
-export function AppleLogo({
-  className = "w-3 h-3 fill-current",
-}: {
-  className?: string;
-}) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 170 170"
-      fill="currentColor"
-      aria-label="Apple"
-    >
-      <path d={APPLE_SVG_PATH} />
-    </svg>
-  );
-}
 
 /** Exact Lucide SVG vector paths (24x24 coordinate box) for pixel-identical canvas rasterization */
 export const LUCIDE_PATHS = {
@@ -325,6 +310,10 @@ export const InteractiveStage = forwardRef<
   const [arcSearchResults, setArcSearchResults] = useState<ArcSearchResult[] | null>(null);
   const [isArcSearching, setIsArcSearching] = useState(false);
   const [arcSearchQuery, setArcSearchQuery] = useState("");
+  const [arcHistory, setArcHistory] = useState<string[]>([
+    "https://en.m.wikipedia.org",
+  ]);
+  const [arcHistoryIndex, setArcHistoryIndex] = useState(0);
 
   // Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -386,6 +375,12 @@ export const InteractiveStage = forwardRef<
   arcReaderModeRef.current = arcReaderMode;
   const isArcSearchingRef = useRef(isArcSearching);
   isArcSearchingRef.current = isArcSearching;
+  const quickTimePlayingRef = useRef(quickTimePlaying);
+  quickTimePlayingRef.current = quickTimePlaying;
+  const quickTimeCurrentTimeRef = useRef(quickTimeCurrentTime);
+  quickTimeCurrentTimeRef.current = quickTimeCurrentTime;
+  const quickTimeDurationRef = useRef(quickTimeDuration);
+  quickTimeDurationRef.current = quickTimeDuration;
   const displayStreamRef = useRef<MediaStream | null>(null);
 
   // Responsive scaling
@@ -793,13 +788,54 @@ export const InteractiveStage = forwardRef<
     }
   };
 
+  const navigateArcTo = (url: string) => {
+    const newHist = arcHistory.slice(0, arcHistoryIndex + 1);
+    newHist.push(url);
+    setArcHistory(newHist);
+    setArcHistoryIndex(newHist.length - 1);
+    setArcUrl(url);
+    setArcActiveUrl(url);
+    setArcSearchResults(null);
+    setArcReaderMode(false);
+  };
+
+  const handleArcBack = () => {
+    if (arcHistoryIndex > 0) {
+      const prevIndex = arcHistoryIndex - 1;
+      setArcHistoryIndex(prevIndex);
+      const prevUrl = arcHistory[prevIndex];
+      setArcUrl(prevUrl);
+      setArcActiveUrl(prevUrl);
+      setArcSearchResults(null);
+      setArcReaderMode(false);
+    }
+  };
+
+  const handleArcForward = () => {
+    if (arcHistoryIndex < arcHistory.length - 1) {
+      const nextIndex = arcHistoryIndex + 1;
+      setArcHistoryIndex(nextIndex);
+      const nextUrl = arcHistory[nextIndex];
+      setArcUrl(nextUrl);
+      setArcActiveUrl(nextUrl);
+      setArcSearchResults(null);
+      setArcReaderMode(false);
+    }
+  };
+
+  const handleArcReload = () => {
+    const current = arcActiveUrl;
+    setArcActiveUrl("");
+    setTimeout(() => setArcActiveUrl(current), 50);
+  };
+
   const performArcSearch = async (query: string) => {
     setIsArcSearching(true);
     setArcSearchResults([]);
     setArcReaderMode(false);
     try {
-      // Fetch live open search results from Wikipedia (CORS friendly)
-      const wikiUrl = `https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(query)}&limit=8&namespace=0&format=json&origin=*`;
+      // 1. Fetch live open search results from Wikipedia (CORS friendly)
+      const wikiUrl = `https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(query)}&limit=6&namespace=0&format=json&origin=*`;
       const res = await fetch(wikiUrl);
       const data = await res.json();
       const titles = (data[1] || []) as string[];
@@ -808,24 +844,69 @@ export const InteractiveStage = forwardRef<
 
       const results: ArcSearchResult[] = titles.map((title, idx) => ({
         title,
-        snippet: snippets[idx] || `Read about ${title} and related topics.`,
+        snippet: snippets[idx] || `Read about ${title} and related topics on Wikipedia.`,
         url: urls[idx] || `https://en.m.wikipedia.org/wiki/${encodeURIComponent(title)}`,
       }));
 
-      // Add a web search option
+      // 2. Synthesize curated high-relevance web results for common topics
+      const qLower = query.toLowerCase();
+      if (qLower.includes("react")) {
+        results.unshift({
+          title: "React – The library for web and native user interfaces",
+          snippet: "React lets you build user interfaces out of individual pieces called components. Create your own React components like Thumbnail, LikeButton, and Video.",
+          url: "https://react.dev",
+        });
+      } else if (qLower.includes("tailwind")) {
+        results.unshift({
+          title: "Tailwind CSS - Rapidly build modern websites without ever leaving your HTML",
+          snippet: "A utility-first CSS framework packed with classes like flex, pt-4, text-center and rotate-90 that can be composed to build any design, directly in your markup.",
+          url: "https://tailwindcss.com",
+        });
+      } else if (qLower.includes("next") || qLower.includes("nextjs")) {
+        results.unshift({
+          title: "Next.js by Vercel - The React Framework for the Web",
+          snippet: "Used by some of the world's largest companies, Next.js enables you to create full-stack Web applications by extending the latest React features.",
+          url: "https://nextjs.org",
+        });
+      } else if (qLower.includes("python")) {
+        results.unshift({
+          title: "Welcome to Python.org",
+          snippet: "Python is a programming language that lets you work quickly and integrate systems more effectively. Download the latest version and explore tutorials.",
+          url: "https://www.python.org",
+        });
+      } else if (qLower.includes("git") || qLower.includes("github")) {
+        results.unshift({
+          title: "GitHub: Let’s build from here",
+          snippet: "GitHub is where over 100 million developers shape the future of software, together. Contribute to the open source community, manage your Git repositories.",
+          url: "https://github.com",
+        });
+      }
+
+      // Add web search options
       results.push({
-        title: `Search DuckDuckGo for "${query}"`,
-        snippet: `Browse comprehensive web results for "${query}" with privacy.`,
+        title: `Search DuckDuckGo for "${query}" ↗`,
+        snippet: `Browse full privacy-first web results for "${query}".`,
         url: `https://duckduckgo.com/?q=${encodeURIComponent(query)}`,
+      });
+
+      results.push({
+        title: `Search Google for "${query}" ↗`,
+        snippet: `Browse comprehensive Google search index for "${query}".`,
+        url: `https://www.google.com/search?q=${encodeURIComponent(query)}`,
       });
 
       setArcSearchResults(results);
     } catch {
       setArcSearchResults([
         {
-          title: `DuckDuckGo: "${query}"`,
+          title: `DuckDuckGo: "${query}" ↗`,
           snippet: `Browse search results for "${query}".`,
           url: `https://duckduckgo.com/?q=${encodeURIComponent(query)}`,
+        },
+        {
+          title: `Google: "${query}" ↗`,
+          snippet: `Browse Google search for "${query}".`,
+          url: `https://www.google.com/search?q=${encodeURIComponent(query)}`,
         },
       ]);
     } finally {
@@ -838,20 +919,14 @@ export const InteractiveStage = forwardRef<
     const trimmed = input.trim();
     if (!trimmed) return;
     if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-      setArcUrl(trimmed);
-      setArcActiveUrl(trimmed);
-      setArcSearchResults(null);
+      navigateArcTo(trimmed);
     } else if (trimmed.includes(".") && !trimmed.includes(" ")) {
-      const url = `https://${trimmed}`;
-      setArcUrl(url);
-      setArcActiveUrl(url);
-      setArcSearchResults(null);
+      navigateArcTo(`https://${trimmed}`);
     } else {
       setArcUrl(trimmed);
       setArcSearchQuery(trimmed);
       void performArcSearch(trimmed);
     }
-    setArcReaderMode(false);
   };
 
   // Canvas frame recording loop with 2x supersampling and visual parity
@@ -870,7 +945,6 @@ export const InteractiveStage = forwardRef<
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
 
-    const applePath = new Path2D(APPLE_SVG_PATH);
     let running = true;
     let frameCount = 0;
     const fpsTimerStart = Date.now();
@@ -967,25 +1041,18 @@ export const InteractiveStage = forwardRef<
         ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
         ctx.fillRect(0, mbY + menuBarH - 1, recRect.width, 1);
 
-        // Vector Apple logo (zero tofu on Windows)
-        ctx.save();
-        ctx.translate(14 - recRect.x, mbY + 7);
-        ctx.scale(0.08, 0.08);
-        ctx.fillStyle = "#ffffff";
-        ctx.fill(applePath);
-        ctx.restore();
-
         const focusedWin = wm.getFocusedWindow();
         const appName = focusedWin?.title ?? "Desktop Stage";
         ctx.fillStyle = "#ffffff";
         ctx.font =
           "bold 12px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
-        ctx.fillText(appName, 36 - recRect.x, mbY + 18);
+        ctx.fillText(appName, 16 - recRect.x, mbY + 18);
 
+        const appNameW = ctx.measureText(appName).width;
         ctx.font =
           "12px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
         ctx.fillStyle = "#d4d4d8";
-        let mx = 105 - recRect.x;
+        let mx = 16 - recRect.x + appNameW + 16;
         for (const item of ["File", "Edit", "View", "Window", "Help"]) {
           ctx.fillText(item, mx, mbY + 18);
           mx += ctx.measureText(item).width + 16;
@@ -1562,22 +1629,51 @@ export const InteractiveStage = forwardRef<
               ctx.fillText("Fast, offline, and mobile-friendly documentation for web technologies.", rx + 90, contentY + 44);
               ctx.fillText("Instant lookup with keyboard shortcuts and comprehensive API guides.", rx + 90, contentY + 60);
             } else {
-              // Standard domain (e.g. example.com)
-              ctx.fillStyle = "#fdfdfd";
+              // Standard or external web page representation
+              let hostname = "Web Page";
+              try {
+                const parsed = new URL(
+                  currentUrlText.startsWith("http")
+                    ? currentUrlText
+                    : `https://${currentUrlText}`,
+                );
+                hostname = parsed.hostname;
+              } catch {
+                hostname = currentUrlText;
+              }
+
+              ctx.fillStyle = "#0f172a";
               ctx.fillRect(rx, contentY, rw, contentH);
 
-              ctx.fillStyle = "#111827";
-              ctx.font = "bold 16px -apple-system, BlinkMacSystemFont, sans-serif";
-              ctx.fillText("Example Domain", rx + 20, contentY + 36);
+              // Page card
+              ctx.fillStyle = "#1e293b";
+              ctx.beginPath();
+              ctx.roundRect(rx + 16, contentY + 16, rw - 32, Math.max(80, contentH - 32), 8);
+              ctx.fill();
+              ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+              ctx.stroke();
 
-              ctx.fillStyle = "#374151";
-              ctx.font = "10.5px -apple-system, BlinkMacSystemFont, sans-serif";
-              ctx.fillText("This domain is for use in illustrative examples in documents.", rx + 20, contentY + 58);
-              ctx.fillText("You may use this domain in literature without prior coordination.", rx + 20, contentY + 74);
+              // Domain header
+              ctx.fillStyle = "#38bdf8";
+              ctx.font = "bold 15px -apple-system, BlinkMacSystemFont, sans-serif";
+              ctx.fillText(hostname, rx + 32, contentY + 48);
 
-              ctx.fillStyle = "#2563eb";
-              ctx.font = "10.5px -apple-system, BlinkMacSystemFont, sans-serif";
-              ctx.fillText("More information...", rx + 20, contentY + 96);
+              ctx.fillStyle = "#94a3b8";
+              ctx.font = "11px -apple-system, BlinkMacSystemFont, sans-serif";
+              ctx.fillText("Active Web Session · Live Preview", rx + 32, contentY + 68);
+              ctx.fillText("Connected via sandboxed Webview environment.", rx + 32, contentY + 86);
+              const maxUrlW = rw - 70;
+              let dispUrl = `URL: ${currentUrlText}`;
+              if (ctx.measureText(dispUrl).width > maxUrlW) {
+                dispUrl = dispUrl.substring(0, 42) + "…";
+              }
+              ctx.fillText(dispUrl, rx + 32, contentY + 104);
+
+              // Status indicator
+              ctx.fillStyle = "#22c55e";
+              ctx.beginPath();
+              ctx.arc(rx + rw - 36, contentY + 44, 4, 0, Math.PI * 2);
+              ctx.fill();
             }
           }
         } else if (win.appKind === "quicktime") {
@@ -1594,19 +1690,80 @@ export const InteractiveStage = forwardRef<
             ctx.fillRect(rx, cy, rw, ch);
           }
 
-          // Glassmorphic playback bar overlay on canvas
-          ctx.fillStyle = "rgba(24, 24, 27, 0.8)";
+          // Glassmorphic playback bar overlay matching DOM
+          const barW = Math.min(rw - 32, 260);
+          const barH = 28;
+          const barX = rx + (rw - barW) / 2;
+          const barY = ry + rh - barH - 10;
+
+          // Bar pill background with blur styling
+          ctx.fillStyle = "rgba(0, 0, 0, 0.65)";
           ctx.beginPath();
-          ctx.roundRect(rx + rw / 2 - 90, ry + rh - 34, 180, 24, 12);
+          ctx.roundRect(barX, barY, barW, barH, 14);
           ctx.fill();
-          ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.20)";
           ctx.lineWidth = 1;
           ctx.stroke();
 
-          ctx.fillStyle = "#38bdf8";
-          ctx.font = "bold 9px sans-serif";
-          ctx.textAlign = "center";
-          ctx.fillText(`▶ QuickTime · ${quickTimeMediaTitle}`, rx + rw / 2, ry + rh - 18);
+          // 1. Play / Pause Button
+          const isPlaying = quickTimePlayingRef.current;
+          const btnCenterX = barX + 16;
+          const btnCenterY = barY + barH / 2;
+
+          ctx.fillStyle = "#ffffff";
+          if (isPlaying) {
+            // Pause icon: two vertical bars
+            ctx.fillRect(btnCenterX - 4, btnCenterY - 5, 2.5, 10);
+            ctx.fillRect(btnCenterX + 1.5, btnCenterY - 5, 2.5, 10);
+          } else {
+            // Play icon: right-pointing triangle
+            ctx.beginPath();
+            ctx.moveTo(btnCenterX - 3, btnCenterY - 5);
+            ctx.lineTo(btnCenterX + 5, btnCenterY);
+            ctx.lineTo(btnCenterX - 3, btnCenterY + 5);
+            ctx.closePath();
+            ctx.fill();
+          }
+
+          // 2. Scrubber Track & Progress Fill
+          const curTime = quickTimeCurrentTimeRef.current || 0;
+          const dur = quickTimeDurationRef.current || 3;
+          const trackX = barX + 34;
+          const trackW = barW - 105;
+          const trackY = barY + 12;
+          const trackH = 4;
+
+          // Background track
+          ctx.fillStyle = "rgba(255, 255, 255, 0.2)";
+          ctx.beginPath();
+          ctx.roundRect(trackX, trackY, trackW, trackH, 2);
+          ctx.fill();
+
+          // Progress fill (rose-500 #f43f5e)
+          const progressRatio = Math.max(0, Math.min(1, curTime / (dur || 1)));
+          const progressW = Math.max(0, trackW * progressRatio);
+          if (progressW > 0) {
+            ctx.fillStyle = "#f43f5e";
+            ctx.beginPath();
+            ctx.roundRect(trackX, trackY, progressW, trackH, 2);
+            ctx.fill();
+          }
+
+          // Scrubber thumb circle
+          ctx.fillStyle = "#ffffff";
+          ctx.beginPath();
+          ctx.arc(trackX + progressW, trackY + trackH / 2, 4.5, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 3. Timecode Text
+          ctx.fillStyle = "#e4e4e7";
+          ctx.font = "10px monospace";
+          ctx.textAlign = "right";
+          ctx.fillText(
+            `${Math.floor(curTime)}s / ${Math.floor(dur)}s`,
+            barX + barW - 10,
+            barY + 18,
+          );
           ctx.textAlign = "left";
         } else if (win.appKind === "photobooth") {
           ctx.fillStyle = "#1c1917";
@@ -2060,8 +2217,7 @@ export const InteractiveStage = forwardRef<
         {/* Top macOS Menu Bar */}
         <div className="flex h-7 w-full items-center justify-between bg-black/40 px-3 text-xs text-white/90 backdrop-blur-md border-b border-white/10 z-30 relative select-none">
           <div className="flex items-center gap-3.5">
-            <AppleLogo className="w-3.5 h-3.5 text-white/90" />
-            <span className="font-medium">
+            <span className="font-semibold text-white">
               {wm.getFocusedWindow()?.title ?? "Desktop Stage"}
             </span>
             <span className="text-white/60 hover:text-white cursor-pointer">
@@ -2522,6 +2678,35 @@ export const InteractiveStage = forwardRef<
                   <div className="flex h-full flex-col text-xs bg-zinc-950">
                     {/* Navigation Bar */}
                     <div className="flex items-center gap-1.5 border-b border-zinc-800 bg-zinc-900/80 p-1.5">
+                      <div className="flex items-center gap-0.5 text-zinc-400 shrink-0">
+                        <button
+                          type="button"
+                          onClick={handleArcBack}
+                          disabled={arcHistoryIndex <= 0}
+                          className="rounded p-1 hover:bg-zinc-800 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent"
+                          title="Back"
+                        >
+                          <ArrowLeft size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleArcForward}
+                          disabled={arcHistoryIndex >= arcHistory.length - 1}
+                          className="rounded p-1 hover:bg-zinc-800 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent"
+                          title="Forward"
+                        >
+                          <ArrowRight size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleArcReload}
+                          className="rounded p-1 hover:bg-zinc-800 hover:text-white"
+                          title="Reload"
+                        >
+                          <RefreshCw size={11} />
+                        </button>
+                      </div>
+
                       <form
                         onSubmit={(e) => {
                           e.preventDefault();
@@ -2541,7 +2726,7 @@ export const InteractiveStage = forwardRef<
                           <Loader2 size={12} className="animate-spin text-indigo-400" />
                         ) : (
                           <button type="submit" className="text-zinc-400 hover:text-white" title="Search or Go">
-                            <ArrowRight size={12} />
+                            <Search size={12} />
                           </button>
                         )}
                       </form>
@@ -2571,6 +2756,19 @@ export const InteractiveStage = forwardRef<
                       >
                         <BookOpen size={11} /> Reader
                       </button>
+
+                      {arcActiveUrl && (
+                        <a
+                          href={arcActiveUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-[11px] font-medium text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors shrink-0"
+                          title="Open current page in a new browser tab"
+                        >
+                          <ExternalLink size={11} />
+                          <span>Open ↗</span>
+                        </a>
+                      )}
                     </div>
 
                     {/* Bookmarks Bar */}
@@ -2587,21 +2785,12 @@ export const InteractiveStage = forwardRef<
                           key={bm.name}
                           onClick={() => {
                             if (bm.name === "DuckDuckGo") {
-                              setArcUrl("https://duckduckgo.com");
-                              setArcActiveUrl("https://duckduckgo.com");
-                              setArcReaderMode(false);
-                              setArcSearchQuery("search");
-                              void performArcSearch("privacy search");
+                              navigateArcTo("https://duckduckgo.com");
                             } else if (bm.name === "Hacker News") {
-                              setArcUrl("https://news.ycombinator.com");
-                              setArcActiveUrl("https://news.ycombinator.com");
+                              navigateArcTo("https://news.ycombinator.com");
                               setArcReaderMode(true);
-                              setArcSearchResults(null);
                             } else {
-                              setArcUrl(bm.url);
-                              setArcActiveUrl(bm.url);
-                              setArcReaderMode(false);
-                              setArcSearchResults(null);
+                              navigateArcTo(bm.url);
                             }
                           }}
                           className="shrink-0 rounded bg-zinc-800/80 px-1.5 py-0.5 hover:bg-zinc-700 hover:text-zinc-200 transition-colors"
@@ -2611,7 +2800,7 @@ export const InteractiveStage = forwardRef<
                       ))}
                     </div>
 
-                    {/* Webview Content: Search Results, Reader Mode, or Sandboxed Iframe */}
+                    {/* Webview Content: Search Results, Reader Mode, DuckDuckGo Portal, or Sandboxed Iframe */}
                     <div className="relative flex-1 overflow-hidden bg-zinc-950">
                       {isArcSearching ? (
                         <div className="flex h-full flex-col items-center justify-center p-8 text-center bg-zinc-950">
@@ -2631,7 +2820,7 @@ export const InteractiveStage = forwardRef<
                                 {arcSearchResults.length} found
                               </span>
                             </div>
-                            <span className="text-[10px] text-zinc-500">Live Search & Proxy</span>
+                            <span className="text-[10px] text-zinc-500">Live Search & Web Index</span>
                           </div>
 
                           <div className="space-y-2.5">
@@ -2644,9 +2833,7 @@ export const InteractiveStage = forwardRef<
                                   <div className="min-w-0 flex-1">
                                     <h4
                                       onClick={() => {
-                                        setArcActiveUrl(res.url);
-                                        setArcUrl(res.url);
-                                        setArcSearchResults(null);
+                                        navigateArcTo(res.url);
                                       }}
                                       className="font-medium text-xs text-indigo-300 hover:text-indigo-200 hover:underline cursor-pointer truncate"
                                     >
@@ -2663,9 +2850,7 @@ export const InteractiveStage = forwardRef<
                                   <div className="flex shrink-0 items-center gap-1.5">
                                     <button
                                       onClick={() => {
-                                        setArcActiveUrl(res.url);
-                                        setArcUrl(res.url);
-                                        setArcSearchResults(null);
+                                        navigateArcTo(res.url);
                                       }}
                                       className="rounded bg-indigo-600/30 px-2 py-1 text-[10px] font-medium text-indigo-300 hover:bg-indigo-600/50 transition-colors"
                                     >
@@ -2682,6 +2867,15 @@ export const InteractiveStage = forwardRef<
                                     >
                                       <BookOpen size={10} />
                                     </button>
+                                    <a
+                                      href={res.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="rounded bg-zinc-800 px-2 py-1 text-[10px] font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors"
+                                      title="Open in new browser tab"
+                                    >
+                                      <ExternalLink size={10} />
+                                    </a>
                                   </div>
                                 </div>
                               </div>
@@ -2711,13 +2905,76 @@ export const InteractiveStage = forwardRef<
                             </p>
                           </div>
                         </div>
+                      ) : arcActiveUrl.includes("duckduckgo.com") ? (
+                        <div className="flex h-full flex-col items-center justify-center bg-[#1e1e24] px-6 text-center select-none">
+                          <div className="mb-4 flex items-center justify-center gap-2">
+                            <span className="text-3xl">🦆</span>
+                            <h2 className="text-xl font-bold tracking-tight text-white">DuckDuckGo</h2>
+                          </div>
+                          <p className="mb-6 text-xs text-zinc-400">
+                            Privacy, simplified. Search the web without being tracked.
+                          </p>
+
+                          <form
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              if (arcSearchQuery.trim()) {
+                                void performArcSearch(arcSearchQuery.trim());
+                              }
+                            }}
+                            className="flex w-full max-w-md items-center rounded-full border border-zinc-700 bg-zinc-900/90 px-4 py-2 shadow-lg focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500"
+                          >
+                            <Search size={16} className="text-zinc-400 mr-2 shrink-0" />
+                            <input
+                              type="text"
+                              value={arcSearchQuery}
+                              onChange={(e) => setArcSearchQuery(e.target.value)}
+                              placeholder="Search without being tracked..."
+                              className="flex-1 bg-transparent text-xs text-white placeholder-zinc-500 focus:outline-none"
+                            />
+                            <button
+                              type="submit"
+                              className="ml-2 rounded-full bg-indigo-600 px-3 py-1 text-[11px] font-medium text-white hover:bg-indigo-500 transition-colors"
+                            >
+                              Search
+                            </button>
+                          </form>
+
+                          <div className="mt-6 flex flex-wrap items-center justify-center gap-2 text-[11px] text-zinc-400">
+                            <span className="text-zinc-500">Popular:</span>
+                            {["React", "Next.js", "Tailwind CSS", "TypeScript", "Python"].map((term) => (
+                              <button
+                                key={term}
+                                onClick={() => {
+                                  setArcSearchQuery(term);
+                                  void performArcSearch(term);
+                                }}
+                                className="rounded-full border border-zinc-800 bg-zinc-900/60 px-2.5 py-1 text-zinc-300 hover:border-zinc-700 hover:text-white transition-colors"
+                              >
+                                {term}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
                       ) : (
-                        <iframe
-                          src={arcActiveUrl}
-                          title="Arc Web Browser"
-                          sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
-                          className="h-full w-full border-0 bg-white"
-                        />
+                        <div className="relative h-full w-full">
+                          <iframe
+                            src={arcActiveUrl}
+                            title="Arc Web Browser"
+                            sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
+                            className="h-full w-full border-0 bg-white"
+                          />
+                          <a
+                            href={arcActiveUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="absolute bottom-2 right-2 flex items-center gap-1 rounded bg-zinc-900/90 border border-zinc-700/80 px-2 py-1 text-[10px] text-zinc-300 hover:text-white shadow-md backdrop-blur-xs"
+                            title="Open current page in a new browser tab"
+                          >
+                            <ExternalLink size={10} />
+                            <span>Open in new tab</span>
+                          </a>
+                        </div>
                       )}
                     </div>
                   </div>

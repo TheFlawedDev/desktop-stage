@@ -116,6 +116,20 @@ export function PreviewPanel() {
     return { width, height: width / projectAspect };
   })();
 
+  const interactiveStageSize = (() => {
+    const padding = 24;
+    const availableWidth = Math.max(0, containerSize.width - padding);
+    const availableHeight = Math.max(0, containerSize.height - padding);
+    const desktopAspect = 1280 / 720;
+
+    const width = Math.min(availableWidth, availableHeight * desktopAspect);
+    return { width, height: width / desktopAspect };
+  })();
+
+  const currentStageSize =
+    workspaceMode === "interactive" ? interactiveStageSize : stageSize;
+
+
   const handleRecordingStatusChange = useCallback(
     (rec: boolean, dur: number) => {
       setIsRecording(rec);
@@ -235,11 +249,12 @@ export function PreviewPanel() {
       <div ref={containerRef} className="bg-canvas relative min-h-0 flex-1">
         <div className="absolute inset-0 grid place-items-center">
           <div
-            className="shadow-panel relative overflow-hidden"
+            className="shadow-panel relative"
             style={{
-              width: stageSize.width,
-              height: stageSize.height,
+              width: currentStageSize.width,
+              height: currentStageSize.height,
               backgroundColor: background,
+              overflow: workspaceMode === "interactive" ? "visible" : "hidden",
             }}
           >
             {/* Mouse-Follow Camera Zoom Wrapper */}
@@ -288,7 +303,7 @@ export function PreviewPanel() {
                   : undefined
               }
             >
-              {stageSize.width > 0 && (
+              {currentStageSize.width > 0 && (
                 <>
                   <div
                     className="absolute inset-0 flex items-center justify-center"
@@ -298,8 +313,8 @@ export function PreviewPanel() {
                   >
                     <InteractiveStage
                       ref={stageRef}
-                      width={stageSize.width}
-                      height={stageSize.height}
+                      width={currentStageSize.width}
+                      height={currentStageSize.height}
                       onTakeRecorded={handleTakeRecorded}
                       onRecordingStatusChange={handleRecordingStatusChange}
                       selectedCrop={selectedCrop}
@@ -316,8 +331,8 @@ export function PreviewPanel() {
                     }}
                   >
                     <PreviewStage
-                      width={stageSize.width}
-                      height={stageSize.height}
+                      width={currentStageSize.width}
+                      height={currentStageSize.height}
                     />
                   </div>
                 </>
@@ -325,10 +340,10 @@ export function PreviewPanel() {
 
               {workspaceMode === "preview" && showGuides && <SafeGuides />}
               {workspaceMode === "preview" && isEmpty && <StartHint />}
-              {workspaceMode === "preview" && stageSize.width > 0 && (
+              {workspaceMode === "preview" && currentStageSize.width > 0 && (
                 <MaskOverlay
-                  width={stageSize.width}
-                  height={stageSize.height}
+                  width={currentStageSize.width}
+                  height={currentStageSize.height}
                   resolution={resolution}
                 />
               )}
