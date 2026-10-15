@@ -58,13 +58,21 @@ export interface ResolvedDesktopApp {
 /** One action clip that has taken effect by this frame. */
 export interface ResolvedDesktopAction {
   clipId: Id;
-  instanceId: Id;
+  instanceId?: Id;
   action: DesktopActionPayload["action"];
   text: string | null;
   startFrame: Frame;
   durationFrames: number;
   /** True while the clip's half-open range still covers the frame. */
   active: boolean;
+}
+
+export interface ResolvedDesktopCameraTracking {
+  active: boolean;
+  zoom: number;
+  smoothingMs: number;
+  targetVideoClipId?: Id;
+  actionClipId?: Id;
 }
 
 export interface ResolvedDesktopIssue {
@@ -80,6 +88,8 @@ export interface ResolvedDesktopFrame {
   apps: ResolvedDesktopApp[];
   /** Actions in effect, ordered by start frame. Hidden actions never appear. */
   actions: ResolvedDesktopAction[];
+  /** Dynamic camera follow state resolved from active trackMouse action clips. */
+  camera: ResolvedDesktopCameraTracking;
   /**
    * Ids of cursor, camera, camera-effect, and lens clips active at this frame.
    * Their payloads are validated by the document parser; applying them to the
@@ -302,20 +312,74 @@ export function resolveDesktopFrame(project: ProjectDocument, frame: Frame): Res
       clipId: record.clipId,
       instanceId: record.payload.instanceId,
       action: record.payload.action,
-      text: record.payload.text ?? null,
+      text: record.payload.action === "trackMouse" ? null : (record.payload.text ?? null),
       startFrame: record.clip.startFrame,
       durationFrames: record.clip.durationFrames,
       active: isActive(record.clip, frame),
     }));
 
   for (const record of orderedActions) {
-    if (!knownInstances.has(record.payload.instanceId)) {
+    if (record.payload.action === "trackMouse") {
+      // trackMouse targets the coincident video clip on the timeline, not an app instance
+      continue;
+    }
+
+    if (!record.payload.instanceId || !knownInstances.has(record.payload.instanceId)) {
       issues.push({
         clipId: record.clipId,
         code: "missing-target",
-        message: `Action targets app instance "${record.payload.instanceId}", which is not in this project.`,
+        message: `Action targets app instance "${record.payload.instanceId ?? ""}", which is not in this project.`,
       });
     }
+  }
+
+  // --- Camera tracking evaluation for trackMouse actions -----------------
+  let camera: ResolvedDesktopCameraTracking = {
+    active: false,
+    zoom: 1.0,
+    smoothingMs: 180,
+  };
+
+  const activeTrackMouseRecord = orderedActions.find(
+    (record) => record.payload.action === "trackMouse" && isActive(record.clip, frame),
+  );
+
+  if (activeTrackMouseRecord && activeTrackMouseRecord.payload.action === "trackMouse") {
+    const payload = activeTrackMouseRecord.payload;
+    const zoom = payload.zoom ?? 1.5;
+    const smoothingMs = payload.smoothingMs ?? 180;
+
+    // Find coincident video clip at frame across tracks
+    let targetVideoClipId: Id | undefined;
+    for (const trackId of project.trackOrder) {
+      const track = project.entities.tracks[trackId];
+      if (!track || track.hidden) continue;
+
+      const candidateClips = Object.values(project.entities.clips).filter(
+        (c) => c.trackId === trackId && isActive(c, frame) && !c.hidden,
+      );
+
+      const videoCandidate = candidateClips.find(
+        (c) =>
+          track.kind === "video" ||
+          c.content.kind === "video" ||
+          (c.content.kind === "plugin" &&
+            (c.content.contentType.includes("video") || c.content.contentType.includes("take"))),
+      );
+
+      if (videoCandidate) {
+        targetVideoClipId = videoCandidate.id;
+        break;
+      }
+    }
+
+    camera = {
+      active: true,
+      zoom,
+      smoothingMs,
+      targetVideoClipId,
+      actionClipId: activeTrackMouseRecord.clipId,
+    };
   }
 
   // Deferred families report only what is actually on screen: a hidden clip, or
@@ -327,7 +391,7 @@ export function resolveDesktopFrame(project: ProjectDocument, frame: Frame): Res
     )
     .map((clip) => clip.id);
 
-  return { frame, composition, apps, actions, deferredClipIds, issues };
+  return { frame, composition, apps, actions, camera, deferredClipIds, issues };
 }
 
 /** The cursor clip active at a frame, or null. Consumed by the cursor milestone. */

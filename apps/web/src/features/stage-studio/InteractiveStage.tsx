@@ -22,6 +22,12 @@ import {
   ArrowRight,
   Maximize2,
   Sliders,
+  Play,
+  Pause,
+  Upload,
+  Image as ImageIcon,
+  ExternalLink,
+  BookOpen,
 } from "lucide-react";
 import {
   StageWindowManager,
@@ -32,6 +38,8 @@ import {
   type AppDefinition,
   APP_DEFINITIONS,
   stageDiagnostics,
+  computeDynamicDpr,
+  classifyMediaFile,
 } from "@desktop-stage/desktop-engine";
 import type {
   StageWindowConfig,
@@ -45,7 +53,7 @@ export const STAGE_WIDTH = 1280;
 export const STAGE_HEIGHT = 720;
 
 export const APPLE_SVG_PATH =
-  "M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.75 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.69-3.04-7.59-7.71-11.72-14.02-6.52-10.01-11.53-20.91-15.02-32.68-3.48-11.78-5.23-23.23-5.23-34.36 0-14.35 3.59-26.41 10.77-36.19 7.18-9.78 16.32-14.77 27.42-14.99 4.9 0 10.45 1.25 16.66 3.75 6.2 2.5 10.15 3.75 11.84 3.75 1.52 0 5.66-1.3 12.41-3.9 6.75-2.61 12.33-3.8 16.74-3.59 12.51.65 22.38 5.43 29.6 14.34-10.87 6.64-16.19 15.67-15.97 27.1.22 9.03 3.69 16.65 10.42 22.85 6.74 6.21 14.78 9.79 24.13 10.77-2.17 6.52-4.78 13.06-7.83 19.62zM119.22 33.15c0-7.39 2.66-14.41 7.99-21.05 5.33-6.64 11.97-10.97 19.92-13 1.09 7.07-.98 14.03-6.2 20.89-5.22 6.85-11.89 11.24-20.02 13.16-.22-.65-.34-1.3-.34-1.96z";
+  "M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.75 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.7-3.07-7.74-7.89-12.13-14.46-6.4-9.61-11.45-20.89-15.15-33.84-3.71-12.94-5.56-25.29-5.56-37.04 0-14.92 3.65-27.18 10.95-36.78 7.3-9.6 16.48-14.49 27.54-14.68 5.65 0 11.48 1.48 17.5 4.45 6.01 2.97 10.15 4.51 12.41 4.63 2.05-.12 6.3-1.74 12.74-4.87 6.44-3.12 12.39-4.59 17.85-4.4 13.68.75 24.62 5.61 32.81 14.58-11.97 7.27-17.85 17.38-17.65 30.34.2 10.19 4.1 18.66 11.69 25.4 7.6 6.74 16.63 10.5 27.1 11.28-2.6 7.65-5.91 15.54-9.92 23.68zM119.22 32.6c0-7.39 2.65-14.19 7.96-20.4 5.3-6.21 11.75-10.37 19.34-12.48.42 2.05.63 3.99.63 5.82 0 7.38-2.73 14.32-8.19 20.83-5.46 6.5-12.01 10.4-19.64 11.71-.1-.83-.1-1.83-.1-5.48z";
 
 export function AppleLogo({
   className = "w-3 h-3 fill-current",
@@ -68,6 +76,76 @@ export interface InteractiveStageHandle {
   startRecording: (mode: "full" | "selected-area", selectedCrop?: Rect) => void;
   stopRecording: () => Promise<{ blob: Blob; manifest: StageTakeManifest }>;
   isRecording: () => boolean;
+}
+
+/**
+ * Synthesizes a real animated sample WebM video blob on initial startup
+ * so Finder and QuickTime can play sample media immediately.
+ */
+async function generateWelcomeDemoBlob(): Promise<Blob> {
+  if (typeof document === "undefined") return new Blob([], { type: "video/webm" });
+  return new Promise((resolve) => {
+    try {
+      const c = document.createElement("canvas");
+      c.width = 640;
+      c.height = 360;
+      const ctx = c.getContext("2d");
+      if (!ctx || typeof MediaRecorder === "undefined") {
+        resolve(new Blob([], { type: "video/webm" }));
+        return;
+      }
+      const stream = c.captureStream(30);
+      const candidates = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+      const mimeType = candidates.find((m) => MediaRecorder.isTypeSupported(m)) || "video/webm";
+      const rec = new MediaRecorder(stream, { mimeType });
+      const chunks: BlobPart[] = [];
+      rec.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) chunks.push(e.data);
+      };
+      rec.onstop = () => {
+        resolve(new Blob(chunks, { type: "video/webm" }));
+      };
+      rec.start();
+
+      let t = 0;
+      const timer = setInterval(() => {
+        t += 0.08;
+        ctx.fillStyle = "#0f172a";
+        ctx.fillRect(0, 0, 640, 360);
+
+        // Animated dynamic neon orbs
+        ctx.fillStyle = "#6366f1";
+        ctx.beginPath();
+        ctx.arc(320 + Math.sin(t) * 90, 180 + Math.cos(t) * 45, 48, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#10b981";
+        ctx.beginPath();
+        ctx.arc(320 + Math.cos(t) * 110, 180 + Math.sin(t) * 55, 32, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#f43f5e";
+        ctx.beginPath();
+        ctx.arc(320 + Math.sin(t * 1.5) * 60, 180 - Math.cos(t * 1.5) * 60, 24, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 20px -apple-system, BlinkMacSystemFont, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("QuickTime Sample Video", 320, 175);
+        ctx.font = "12px -apple-system, BlinkMacSystemFont, sans-serif";
+        ctx.fillStyle = "#94a3b8";
+        ctx.fillText("Interactive Virtual Desktop Media Player", 320, 205);
+
+        if (t > 2.0) {
+          clearInterval(timer);
+          if (rec.state !== "inactive") rec.stop();
+        }
+      }, 50);
+    } catch {
+      resolve(new Blob([], { type: "video/webm" }));
+    }
+  });
 }
 
 export interface InteractiveStageProps {
@@ -141,15 +219,35 @@ export const InteractiveStage = forwardRef<
   const [terminalInput, setTerminalInput] = useState("");
   const [terminalCwd, setTerminalCwd] = useState("/");
 
-  // Finder state
+  // Wallpaper state
+  const [wallpaper, setWallpaper] = useState<string>("royal-blue-nebula");
+  const [customWallpaperUrl, setCustomWallpaperUrl] = useState<string | null>(null);
+  const customWallpaperImgRef = useRef<HTMLImageElement | null>(null);
+  const wallpaperFileInputRef = useRef<HTMLInputElement>(null);
+  const [showWallpaperPicker, setShowWallpaperPicker] = useState(false);
+
+  // Finder state & Drag-and-drop media ingestion
   const [finderFiles, setFinderFiles] = useState<
     Array<{ name: string; isDir: boolean; size: number }>
   >([]);
   const [newFileName, setNewFileName] = useState("");
+  const [isDraggingOverFinder, setIsDraggingOverFinder] = useState(false);
+  const mediaRegistryRef = useRef<
+    Map<string, { url: string; file?: File; kind: string; badge: string }>
+  >(new Map());
+
+  // QuickTime player state
+  const [quickTimeMediaUrl, setQuickTimeMediaUrl] = useState<string | null>(null);
+  const [quickTimeMediaTitle, setQuickTimeMediaTitle] = useState<string>("welcome-demo.webm");
+  const quickTimeVideoRef = useRef<HTMLVideoElement>(null);
+  const [quickTimePlaying, setQuickTimePlaying] = useState(true);
+  const [quickTimeCurrentTime, setQuickTimeCurrentTime] = useState(0);
+  const [quickTimeDuration, setQuickTimeDuration] = useState(0);
 
   // Arc Browser state
-  const [arcUrl, setArcUrl] = useState("https://example.com");
-  const [arcActiveUrl, setArcActiveUrl] = useState("https://example.com");
+  const [arcUrl, setArcUrl] = useState("https://en.m.wikipedia.org");
+  const [arcActiveUrl, setArcActiveUrl] = useState("https://en.m.wikipedia.org");
+  const [arcReaderMode, setArcReaderMode] = useState(false);
 
   // Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -212,6 +310,7 @@ export const InteractiveStage = forwardRef<
 
   // Seed VFS files on startup
   useEffect(() => {
+    let mounted = true;
     void (async () => {
       try {
         if (!(await vfs.exists("/welcome.txt"))) {
@@ -226,11 +325,30 @@ export const InteractiveStage = forwardRef<
             "console.log('Desktop Stage running on web');\n",
           );
         }
+        if (!(await vfs.exists("/welcome-demo.webm"))) {
+          const demoBlob = await generateWelcomeDemoBlob();
+          if (!mounted) return;
+          const demoUrl = URL.createObjectURL(demoBlob);
+          mediaRegistryRef.current.set("welcome-demo.webm", {
+            url: demoUrl,
+            kind: "video",
+            badge: "WEBM",
+          });
+          await vfs.writeFile(
+            "/welcome-demo.webm",
+            `[WebM Video Demo (${demoBlob.size} bytes)]\n`,
+          );
+          setQuickTimeMediaUrl(demoUrl);
+          setQuickTimeMediaTitle("welcome-demo.webm");
+        }
         void refreshFinder();
       } catch {
         // ignore
       }
     })();
+    return () => {
+      mounted = false;
+    };
   }, [vfs]);
 
   // Initial default windows: Finder & iTerm
@@ -331,7 +449,7 @@ export const InteractiveStage = forwardRef<
 
       if (cropDragMode === "move") {
         x = Math.max(0, Math.min(STAGE_WIDTH - w, x + dx));
-        y = Math.max(28, Math.min(STAGE_HEIGHT - h, y + dy));
+        y = Math.max(0, Math.min(STAGE_HEIGHT - h, y + dy));
       } else {
         if (cropDragMode.includes("e")) {
           w = Math.max(
@@ -354,7 +472,7 @@ export const InteractiveStage = forwardRef<
         if (cropDragMode.includes("n")) {
           const maxDy = initialCropRect.height - 120;
           const actualDy = Math.max(
-            28 - initialCropRect.y,
+            -initialCropRect.y,
             Math.min(maxDy, dy),
           );
           y = initialCropRect.y + actualDy;
@@ -494,12 +612,84 @@ export const InteractiveStage = forwardRef<
     }
   };
 
+  // Finder drag & drop handler for media files from host OS
+  const handleFinderDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOverFinder(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+
+    for (const file of files) {
+      const url = URL.createObjectURL(file);
+      const info = classifyMediaFile(file.name);
+      mediaRegistryRef.current.set(file.name, {
+        url,
+        file,
+        kind: info.kind,
+        badge: info.badge,
+      });
+      await vfs.writeFile(
+        `/${file.name}`,
+        `[Imported ${info.badge} file: ${file.name} (${file.size} bytes)]\n`,
+      );
+    }
+    await refreshFinder();
+    stageDiagnostics.log(
+      "SHELL",
+      `Ingested ${files.length} media file(s) via Finder drag & drop`,
+    );
+  };
+
+  // Finder file click handler (opens videos in QuickTime with auto-play)
+  const handleFinderFileClick = (file: { name: string; isDir: boolean; size: number }) => {
+    if (file.isDir) return;
+    const info = classifyMediaFile(file.name);
+    if (info.kind === "video") {
+      const registered = mediaRegistryRef.current.get(file.name);
+      const url = registered?.url ?? quickTimeMediaUrl;
+      if (url) {
+        setQuickTimeMediaUrl(url);
+        setQuickTimeMediaTitle(file.name);
+        const existing = wm.getWindows().find((w) => w.appKind === "quicktime");
+        if (existing) {
+          wm.restoreWindow(existing.id);
+          wm.focusWindow(existing.id);
+        } else {
+          wm.openApp("quicktime", { x: 380, y: 110, width: 620, height: 400 });
+        }
+        syncWindows();
+        setQuickTimePlaying(true);
+        stageDiagnostics.log("UI", `Opened video ${file.name} in QuickTime with auto-play`);
+      }
+    }
+  };
+
+  // Arc navigation with DuckDuckGo fallback
+  const handleArcNavigate = (input: string) => {
+    const trimmed = input.trim();
+    if (!trimmed) return;
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+      setArcUrl(trimmed);
+      setArcActiveUrl(trimmed);
+    } else if (trimmed.includes(".") && !trimmed.includes(" ")) {
+      const url = `https://${trimmed}`;
+      setArcUrl(url);
+      setArcActiveUrl(url);
+    } else {
+      const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(trimmed)}`;
+      setArcUrl(trimmed);
+      setArcActiveUrl(searchUrl);
+    }
+    setArcReaderMode(false);
+  };
+
   // Canvas frame recording loop with 2x supersampling and visual parity
   const startCanvasRecording = (recRect: Rect) => {
     const canvas = canvasRecordRef.current;
     if (!canvas) return;
 
-    const DPR = 2; // 2x supersampling for high-DPI crisp text and vector rendering
+    const DPR = computeDynamicDpr(recRect.width, recRect.height);
     canvas.width = recRect.width * DPR;
     canvas.height = recRect.height * DPR;
     const ctx = canvas.getContext("2d", {
@@ -523,31 +713,56 @@ export const InteractiveStage = forwardRef<
       ctx.scale(DPR, DPR);
 
       // 1. Desktop Wallpaper Background - aligned to global stage coordinates
-      const bgGrad = ctx.createLinearGradient(
-        -recRect.x,
-        -recRect.y,
-        STAGE_WIDTH - recRect.x,
-        STAGE_HEIGHT - recRect.y,
-      );
-      bgGrad.addColorStop(0, "#1e1b4b");
-      bgGrad.addColorStop(0.4, "#312e81");
-      bgGrad.addColorStop(1, "#1e3a8a");
-      ctx.fillStyle = bgGrad;
-      ctx.fillRect(0, 0, recRect.width, recRect.height);
+      if (wallpaper === "custom" && customWallpaperImgRef.current) {
+        ctx.drawImage(
+          customWallpaperImgRef.current,
+          -recRect.x,
+          -recRect.y,
+          STAGE_WIDTH,
+          STAGE_HEIGHT,
+        );
+      } else {
+        const bgGrad = ctx.createLinearGradient(
+          -recRect.x,
+          -recRect.y,
+          STAGE_WIDTH - recRect.x,
+          STAGE_HEIGHT - recRect.y,
+        );
+        if (wallpaper === "macos-sonoma") {
+          bgGrad.addColorStop(0, "#d97706");
+          bgGrad.addColorStop(0.5, "#e11d48");
+          bgGrad.addColorStop(1, "#581c87");
+        } else if (wallpaper === "macos-sequoia") {
+          bgGrad.addColorStop(0, "#064e3b");
+          bgGrad.addColorStop(0.5, "#134e4a");
+          bgGrad.addColorStop(1, "#0f172a");
+        } else if (wallpaper === "macos-monterey") {
+          bgGrad.addColorStop(0, "#4c1d95");
+          bgGrad.addColorStop(0.5, "#be185d");
+          bgGrad.addColorStop(1, "#1e40af");
+        } else {
+          // royal-blue-nebula
+          bgGrad.addColorStop(0, "#1e1b4b");
+          bgGrad.addColorStop(0.4, "#312e81");
+          bgGrad.addColorStop(1, "#1e3a8a");
+        }
+        ctx.fillStyle = bgGrad;
+        ctx.fillRect(0, 0, recRect.width, recRect.height);
 
-      // Ambient desktop nebula glow - aligned to global stage coordinates
-      const orbGrad = ctx.createRadialGradient(
-        STAGE_WIDTH * 0.7 - recRect.x,
-        STAGE_HEIGHT * 0.3 - recRect.y,
-        20,
-        STAGE_WIDTH * 0.7 - recRect.x,
-        STAGE_HEIGHT * 0.3 - recRect.y,
-        Math.max(200, STAGE_WIDTH * 0.5),
-      );
-      orbGrad.addColorStop(0, "rgba(99, 102, 241, 0.25)");
-      orbGrad.addColorStop(1, "rgba(0, 0, 0, 0)");
-      ctx.fillStyle = orbGrad;
-      ctx.fillRect(0, 0, recRect.width, recRect.height);
+        // Ambient desktop nebula glow
+        const orbGrad = ctx.createRadialGradient(
+          STAGE_WIDTH * 0.7 - recRect.x,
+          STAGE_HEIGHT * 0.3 - recRect.y,
+          20,
+          STAGE_WIDTH * 0.7 - recRect.x,
+          STAGE_HEIGHT * 0.3 - recRect.y,
+          Math.max(200, STAGE_WIDTH * 0.5),
+        );
+        orbGrad.addColorStop(0, "rgba(99, 102, 241, 0.25)");
+        orbGrad.addColorStop(1, "rgba(0, 0, 0, 0)");
+        ctx.fillStyle = orbGrad;
+        ctx.fillRect(0, 0, recRect.width, recRect.height);
+      }
 
       // 2. macOS Top Menu Bar (if visible in crop region)
       const menuBarH = 28;
@@ -775,18 +990,38 @@ export const InteractiveStage = forwardRef<
             const fy = itemStartY + row * 75;
             if (fy + 60 > ry + rh - 30) break;
 
-            // DOC badge icon
-            ctx.fillStyle = "#27272a";
+            // File media badges
+            const mediaInfo = classifyMediaFile(file.name);
+            let badgeBg = "#27272a";
+            let badgeText = "#a1a1aa";
+            if (mediaInfo.badge === "MP4") {
+              badgeBg = "#1e3a8a";
+              badgeText = "#60a5fa";
+            } else if (mediaInfo.badge === "WEBM") {
+              badgeBg = "#581c87";
+              badgeText = "#c084fc";
+            } else if (mediaInfo.badge === "MOV" || mediaInfo.badge === "MKV") {
+              badgeBg = "#831843";
+              badgeText = "#f472b6";
+            } else if (mediaInfo.badge === "AUDIO") {
+              badgeBg = "#78350f";
+              badgeText = "#fbbf24";
+            } else if (mediaInfo.badge === "IMG") {
+              badgeBg = "#064e3b";
+              badgeText = "#34d399";
+            }
+
+            ctx.fillStyle = file.isDir ? "#1e293b" : badgeBg;
             ctx.beginPath();
             ctx.roundRect(fx + 14, fy, 28, 28, 4);
             ctx.fill();
-            ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
             ctx.stroke();
 
-            ctx.fillStyle = "#a1a1aa";
+            ctx.fillStyle = file.isDir ? "#60a5fa" : badgeText;
             ctx.font = "bold 9px monospace";
             ctx.textAlign = "center";
-            ctx.fillText(file.isDir ? "DIR" : "DOC", fx + 28, fy + 18);
+            ctx.fillText(file.isDir ? "DIR" : mediaInfo.badge, fx + 28, fy + 18);
 
             // File name & size
             ctx.fillStyle = "#f4f4f5";
@@ -847,31 +1082,37 @@ export const InteractiveStage = forwardRef<
           ctx.fillStyle = "#94a3b8";
           ctx.font = "11px sans-serif";
           ctx.fillText(
-            "Chromium context isolation • Audio muted during recording",
+            "DuckDuckGo search • Real webview navigation",
             rx + 28,
             cy + 94,
           );
         } else if (win.appKind === "quicktime") {
-          ctx.fillStyle = "#0c0a09";
-          ctx.fillRect(rx, cy, rw, ch);
+          const videoEl = quickTimeVideoRef.current;
+          if (videoEl && videoEl.readyState >= 2) {
+            try {
+              ctx.drawImage(videoEl, rx, cy, rw, ch);
+            } catch {
+              ctx.fillStyle = "#000000";
+              ctx.fillRect(rx, cy, rw, ch);
+            }
+          } else {
+            ctx.fillStyle = "#000000";
+            ctx.fillRect(rx, cy, rw, ch);
+          }
+
+          // Glassmorphic playback bar overlay on canvas
+          ctx.fillStyle = "rgba(24, 24, 27, 0.8)";
+          ctx.beginPath();
+          ctx.roundRect(rx + rw / 2 - 90, ry + rh - 34, 180, 24, 12);
+          ctx.fill();
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+          ctx.lineWidth = 1;
+          ctx.stroke();
+
           ctx.fillStyle = "#38bdf8";
-          ctx.beginPath();
-          ctx.arc(rx + rw / 2, cy + ch / 2 - 10, 24, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = "#0f172a";
-          ctx.beginPath();
-          ctx.moveTo(rx + rw / 2 - 6, cy + ch / 2 - 18);
-          ctx.lineTo(rx + rw / 2 + 10, cy + ch / 2 - 10);
-          ctx.lineTo(rx + rw / 2 - 6, cy + ch / 2 - 2);
-          ctx.fill();
-          ctx.fillStyle = "#a1a1aa";
-          ctx.font = "11px sans-serif";
+          ctx.font = "bold 9px sans-serif";
           ctx.textAlign = "center";
-          ctx.fillText(
-            "QuickTime Player • 00:01:23 / 00:04:30",
-            rx + rw / 2,
-            cy + ch / 2 + 30,
-          );
+          ctx.fillText(`▶ QuickTime · ${quickTimeMediaTitle}`, rx + rw / 2, ry + rh - 18);
           ctx.textAlign = "left";
         } else if (win.appKind === "photobooth") {
           ctx.fillStyle = "#1c1917";
@@ -1274,8 +1515,19 @@ export const InteractiveStage = forwardRef<
           height: STAGE_HEIGHT,
           transform: `scale(${scale})`,
           transformOrigin: "center center",
-          background:
-            "linear-gradient(135deg, #1e1b4b 0%, #312e81 40%, #1e3a8a 100%)",
+          ...(customWallpaperUrl && wallpaper === "custom"
+            ? {
+                backgroundImage: `url(${customWallpaperUrl})`,
+                backgroundSize: "cover",
+                backgroundPosition: "center",
+              }
+            : wallpaper === "macos-sonoma"
+              ? { background: "linear-gradient(135deg, #d97706 0%, #e11d48 50%, #581c87 100%)" }
+              : wallpaper === "macos-sequoia"
+                ? { background: "linear-gradient(135deg, #064e3b 0%, #134e4a 50%, #0f172a 100%)" }
+                : wallpaper === "macos-monterey"
+                  ? { background: "linear-gradient(135deg, #4c1d95 0%, #be185d 50%, #1e40af 100%)" }
+                  : { background: "linear-gradient(135deg, #1e1b4b 0%, #312e81 40%, #1e3a8a 100%)" }),
         }}
         onMouseMove={handleStageMouseMove}
         onMouseDown={handleStageMouseDown}
@@ -1305,6 +1557,7 @@ export const InteractiveStage = forwardRef<
               Help
             </span>
           </div>
+
           <div className="flex items-center gap-3 text-[11px] text-white/70">
             {isRecording && (
               <span className="flex items-center gap-1.5 text-rose-400 font-medium">
@@ -1312,6 +1565,85 @@ export const InteractiveStage = forwardRef<
                 REC {(recordDuration / 1000).toFixed(1)}s
               </span>
             )}
+
+            {/* Desktop Wallpaper Picker Dropdown */}
+            <div className="relative">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowWallpaperPicker((prev) => !prev);
+                }}
+                className="flex items-center gap-1 hover:text-white transition-colors px-1.5 py-0.5 rounded hover:bg-white/10"
+                title="Change Desktop Wallpaper"
+              >
+                <ImageIcon size={12} />
+                <span className="capitalize">{wallpaper.replace("macos-", "").replace("-", " ")}</span>
+              </button>
+
+              {showWallpaperPicker && (
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  className="absolute right-0 top-7 z-50 w-44 rounded-md border border-zinc-700 bg-zinc-900/95 p-1 text-xs shadow-xl backdrop-blur-md"
+                >
+                  <p className="px-2 py-1 text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">
+                    Wallpaper
+                  </p>
+                  {[
+                    { id: "royal-blue-nebula", label: "Royal Blue Nebula" },
+                    { id: "macos-sonoma", label: "macOS Sonoma" },
+                    { id: "macos-sequoia", label: "macOS Sequoia" },
+                    { id: "macos-monterey", label: "macOS Monterey" },
+                  ].map((wp) => (
+                    <button
+                      key={wp.id}
+                      onClick={() => {
+                        setWallpaper(wp.id);
+                        setShowWallpaperPicker(false);
+                      }}
+                      className={`flex w-full items-center justify-between rounded px-2 py-1 text-left hover:bg-zinc-800 ${
+                        wallpaper === wp.id ? "text-indigo-400 font-semibold" : "text-zinc-300"
+                      }`}
+                    >
+                      {wp.label}
+                      {wallpaper === wp.id && <span>✓</span>}
+                    </button>
+                  ))}
+                  <div className="my-1 border-t border-zinc-800" />
+                  <button
+                    onClick={() => {
+                      wallpaperFileInputRef.current?.click();
+                      setShowWallpaperPicker(false);
+                    }}
+                    className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-zinc-300 hover:bg-zinc-800"
+                  >
+                    <Upload size={11} />
+                    Custom Image...
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Hidden file input for custom wallpaper */}
+            <input
+              ref={wallpaperFileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  const url = URL.createObjectURL(file);
+                  setCustomWallpaperUrl(url);
+                  setWallpaper("custom");
+                  const img = new Image();
+                  img.src = url;
+                  img.onload = () => {
+                    customWallpaperImgRef.current = img;
+                  };
+                }
+              }}
+            />
+
             <span>100%</span>
             <span>Wed 3:45 PM</span>
           </div>
@@ -1527,10 +1859,31 @@ export const InteractiveStage = forwardRef<
 
                 {/* Finder File Explorer */}
                 {win.appKind === "finder" && (
-                  <div className="flex h-full flex-col text-xs">
+                  <div
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setIsDraggingOverFinder(true);
+                    }}
+                    onDragLeave={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setIsDraggingOverFinder(false);
+                    }}
+                    onDrop={handleFinderDrop}
+                    className="relative flex h-full flex-col text-xs"
+                  >
+                    {isDraggingOverFinder && (
+                      <div className="absolute inset-0 z-30 flex flex-col items-center justify-center rounded-md border-2 border-dashed border-blue-400 bg-blue-950/85 p-4 text-center backdrop-blur-xs">
+                        <Upload size={32} className="mb-2 text-blue-300 animate-bounce" />
+                        <p className="text-xs font-semibold text-white">Drop media files here</p>
+                        <p className="text-[10px] text-blue-300">Videos (.mp4, .webm, .mov), Audio, Images</p>
+                      </div>
+                    )}
+
                     <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5">
                       <span className="font-semibold text-zinc-300">
-                        Virtual Root (/)
+                        Virtual Root (/) · Drag files from OS
                       </span>
                       <button
                         onClick={refreshFinder}
@@ -1543,30 +1896,49 @@ export const InteractiveStage = forwardRef<
                     <div className="flex-1 overflow-auto py-2">
                       {finderFiles.length === 0 ? (
                         <div className="text-zinc-500 italic">
-                          No files in virtual directory
+                          No files in virtual directory. Drag & drop files here.
                         </div>
                       ) : (
                         <div className="grid grid-cols-3 gap-2">
-                          {finderFiles.map((f) => (
-                            <div
-                              key={f.name}
-                              className="flex flex-col items-center justify-center p-2 rounded-md hover:bg-zinc-800/60 cursor-pointer"
-                            >
-                              {f.isDir ? (
-                                <Folder size={28} className="text-blue-400" />
-                              ) : (
-                                <div className="text-zinc-400 font-mono text-[10px] uppercase font-bold p-1 bg-zinc-800 rounded">
-                                  DOC
-                                </div>
-                              )}
-                              <span className="text-[11px] text-zinc-200 truncate mt-1 w-full text-center">
-                                {f.name}
-                              </span>
-                              <span className="text-[9px] text-zinc-500">
-                                {f.size} B
-                              </span>
-                            </div>
-                          ))}
+                          {finderFiles.map((f) => {
+                            const info = classifyMediaFile(f.name);
+                            return (
+                              <div
+                                key={f.name}
+                                onClick={() => handleFinderFileClick(f)}
+                                className="group flex flex-col items-center justify-center rounded-md p-2 hover:bg-zinc-800/70 cursor-pointer transition-colors"
+                                title={info.kind === "video" ? `${f.name} (Click to play in QuickTime)` : f.name}
+                              >
+                                {f.isDir ? (
+                                  <Folder size={28} className="text-blue-400" />
+                                ) : (
+                                  <div
+                                    className={`rounded px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase shadow-xs ${
+                                      info.badge === "MP4"
+                                        ? "border border-blue-600/50 bg-blue-950/80 text-blue-300"
+                                        : info.badge === "WEBM"
+                                          ? "border border-purple-600/50 bg-purple-950/80 text-purple-300"
+                                          : info.badge === "MOV" || info.badge === "MKV"
+                                            ? "border border-rose-600/50 bg-rose-950/80 text-rose-300"
+                                            : info.badge === "AUDIO"
+                                              ? "border border-amber-600/50 bg-amber-950/80 text-amber-300"
+                                              : info.badge === "IMG"
+                                                ? "border border-emerald-600/50 bg-emerald-950/80 text-emerald-300"
+                                                : "border border-zinc-700 bg-zinc-800 text-zinc-400"
+                                    }`}
+                                  >
+                                    {info.badge}
+                                  </div>
+                                )}
+                                <span className="mt-1 w-full truncate text-center text-[11px] font-medium text-zinc-200 group-hover:text-white">
+                                  {f.name}
+                                </span>
+                                <span className="text-[9px] text-zinc-500">
+                                  {f.size ? `${(f.size / 1024).toFixed(1)} KB` : "45 B"}
+                                </span>
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -1592,58 +1964,175 @@ export const InteractiveStage = forwardRef<
                   </div>
                 )}
 
-                {/* Arc Webview Sandbox */}
+                {/* Arc Webview Sandbox with DuckDuckGo Lookup & Bookmarks */}
                 {win.appKind === "arc" && (
-                  <div className="flex h-full flex-col text-xs">
-                    <div className="flex items-center gap-2 border-b border-zinc-800 pb-1.5">
-                      <input
-                        type="text"
-                        value={arcUrl}
-                        onChange={(e) => setArcUrl(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") setArcActiveUrl(arcUrl);
+                  <div className="flex h-full flex-col text-xs bg-zinc-950">
+                    {/* Navigation Bar */}
+                    <div className="flex items-center gap-1.5 border-b border-zinc-800 bg-zinc-900/80 p-1.5">
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          handleArcNavigate(arcUrl);
                         }}
-                        className="flex-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-xs text-zinc-200 focus:outline-none"
-                      />
-                      <button
-                        onClick={() => setArcActiveUrl(arcUrl)}
-                        className="rounded bg-zinc-800 p-1 text-zinc-300 hover:bg-zinc-700"
+                        className="flex flex-1 items-center gap-1.5 rounded-md border border-zinc-700/80 bg-zinc-950 px-2 py-1"
                       >
-                        <ArrowRight size={12} />
+                        <Globe size={12} className="shrink-0 text-indigo-400" />
+                        <input
+                          type="text"
+                          value={arcUrl}
+                          onChange={(e) => setArcUrl(e.target.value)}
+                          placeholder="Search DuckDuckGo or enter URL (e.g. wikipedia.org)..."
+                          className="flex-1 bg-transparent text-xs text-zinc-100 focus:outline-none"
+                        />
+                        <button type="submit" className="text-zinc-400 hover:text-white">
+                          <ArrowRight size={12} />
+                        </button>
+                      </form>
+
+                      <button
+                        onClick={() => setArcReaderMode((prev) => !prev)}
+                        className={`flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium border transition-colors ${
+                          arcReaderMode
+                            ? "border-indigo-500/50 bg-indigo-600/30 text-indigo-300"
+                            : "border-zinc-700 bg-zinc-800 text-zinc-400 hover:text-zinc-200"
+                        }`}
+                        title="Toggle clean reader mode"
+                      >
+                        <BookOpen size={11} /> Reader
                       </button>
                     </div>
 
-                    <div className="relative flex-1 rounded bg-zinc-900/50 mt-2 overflow-hidden flex items-center justify-center border border-zinc-800">
-                      <div className="text-center p-4">
-                        <Globe
-                          size={32}
-                          className="mx-auto text-indigo-400 mb-2"
+                    {/* Bookmarks Bar */}
+                    <div className="flex items-center gap-1 overflow-x-auto border-b border-zinc-800/60 bg-zinc-900/40 px-2 py-1 text-[10px] text-zinc-400">
+                      <span className="shrink-0 font-medium text-zinc-500">Bookmarks:</span>
+                      {[
+                        { name: "Wikipedia", url: "https://en.m.wikipedia.org" },
+                        { name: "DuckDuckGo", url: "https://html.duckduckgo.com" },
+                        { name: "DevDocs", url: "https://devdocs.io" },
+                        { name: "Example Domain", url: "https://example.com" },
+                        { name: "Hacker News", url: "https://news.ycombinator.com" },
+                      ].map((bm) => (
+                        <button
+                          key={bm.name}
+                          onClick={() => {
+                            setArcUrl(bm.url);
+                            setArcActiveUrl(bm.url);
+                            setArcReaderMode(false);
+                          }}
+                          className="shrink-0 rounded bg-zinc-800/80 px-1.5 py-0.5 hover:bg-zinc-700 hover:text-zinc-200 transition-colors"
+                        >
+                          {bm.name}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Webview Content */}
+                    <div className="relative flex-1 overflow-hidden bg-white">
+                      {arcReaderMode ? (
+                        <div className="h-full overflow-auto bg-zinc-900 p-4 text-zinc-200">
+                          <h2 className="mb-2 text-base font-bold text-white">Arc Reader View</h2>
+                          <p className="mb-3 font-mono text-xs text-zinc-400">{arcActiveUrl}</p>
+                          <div className="space-y-2 text-xs leading-relaxed text-zinc-300">
+                            <p>
+                              Clean distraction-free reading mode. Websites that forbid iframe embedding
+                              via <code className="font-mono text-indigo-400">X-Frame-Options: SAMEORIGIN</code> can
+                              be previewed here without header restrictions.
+                            </p>
+                            <p>
+                              Destination URL:{" "}
+                              <a
+                                href={arcActiveUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-indigo-400 underline"
+                              >
+                                {arcActiveUrl}
+                              </a>
+                            </p>
+                          </div>
+                        </div>
+                      ) : (
+                        <iframe
+                          src={arcActiveUrl}
+                          title="Arc Web Browser"
+                          sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
+                          className="h-full w-full border-0 bg-white"
                         />
-                        <p className="font-semibold text-zinc-200">
-                          Arc Isolated Chromium View
-                        </p>
-                        <p className="text-[11px] text-zinc-400 font-mono mt-1">
-                          {arcActiveUrl}
-                        </p>
-                        <p className="text-[10px] text-zinc-500 mt-2 max-w-xs">
-                          Sandboxed webview running with strict origin isolation
-                          & custom UA spoofing.
-                        </p>
-                      </div>
+                      )}
                     </div>
                   </div>
                 )}
 
-                {/* QuickTime Player */}
+                {/* QuickTime Player with Live HTML5 Video & Glassmorphic Scrubber */}
                 {win.appKind === "quicktime" && (
-                  <div className="flex h-full flex-col items-center justify-center text-center p-4">
-                    <Video size={36} className="text-rose-400 mb-2" />
-                    <h4 className="font-medium text-zinc-200 text-xs">
-                      QuickTime Media Player
-                    </h4>
-                    <p className="text-[11px] text-zinc-400 mt-1">
-                      Audio/video playback engine with timeline routing
-                    </p>
+                  <div className="relative flex h-full flex-col bg-black overflow-hidden select-none">
+                    {quickTimeMediaUrl ? (
+                      <video
+                        ref={quickTimeVideoRef}
+                        src={quickTimeMediaUrl}
+                        autoPlay
+                        loop
+                        playsInline
+                        muted
+                        onTimeUpdate={() => {
+                          if (quickTimeVideoRef.current) {
+                            setQuickTimeCurrentTime(quickTimeVideoRef.current.currentTime);
+                            setQuickTimeDuration(quickTimeVideoRef.current.duration || 0);
+                          }
+                        }}
+                        className="h-full w-full object-contain"
+                      />
+                    ) : (
+                      <div className="flex h-full flex-col items-center justify-center p-4 text-center">
+                        <Video size={36} className="mb-2 text-rose-400" />
+                        <h4 className="text-xs font-medium text-zinc-200">
+                          QuickTime Media Player
+                        </h4>
+                        <p className="mt-1 text-[11px] text-zinc-400">
+                          Click any video file in Finder to open and play
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Floating macOS QuickTime Transport Scrubber */}
+                    <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2.5 rounded-full border border-white/20 bg-zinc-900/85 px-3.5 py-1.5 shadow-2xl backdrop-blur-md">
+                      <button
+                        onClick={() => {
+                          if (!quickTimeVideoRef.current) return;
+                          if (quickTimeVideoRef.current.paused) {
+                            void quickTimeVideoRef.current.play();
+                            setQuickTimePlaying(true);
+                          } else {
+                            quickTimeVideoRef.current.pause();
+                            setQuickTimePlaying(false);
+                          }
+                        }}
+                        className="text-white hover:text-rose-400 transition-colors"
+                        title={quickTimePlaying ? "Pause" : "Play"}
+                      >
+                        {quickTimePlaying ? <Pause size={13} /> : <Play size={13} className="fill-current" />}
+                      </button>
+
+                      <input
+                        type="range"
+                        min={0}
+                        max={quickTimeDuration || 100}
+                        step={0.1}
+                        value={quickTimeCurrentTime}
+                        onChange={(e) => {
+                          const time = Number(e.target.value);
+                          setQuickTimeCurrentTime(time);
+                          if (quickTimeVideoRef.current) {
+                            quickTimeVideoRef.current.currentTime = time;
+                          }
+                        }}
+                        className="h-1 w-28 accent-rose-500 rounded-lg cursor-pointer"
+                      />
+
+                      <span className="font-mono text-[10px] text-zinc-300 tabular">
+                        {Math.floor(quickTimeCurrentTime)}s / {Math.floor(quickTimeDuration || 3)}s
+                      </span>
+                    </div>
                   </div>
                 )}
 

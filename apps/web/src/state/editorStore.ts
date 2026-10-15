@@ -21,7 +21,11 @@ import {
 import { retimeBlock, shiftBlock } from "@cutaway/caption-engine";
 import { createClipForAsset, trackKindForAsset } from "@cutaway/media-engine";
 import { createId, createTrack } from "@cutaway/utils";
-import { createStarterProject } from "@desktop-stage/desktop-engine";
+import {
+  createDesktopTrack,
+  createStarterProject,
+  createTrackMouseClip,
+} from "@desktop-stage/desktop-engine";
 import {
   canRedo as historyCanRedo,
   canUndo as historyCanUndo,
@@ -148,6 +152,13 @@ export interface EditorState {
   setAspectRatio: (id: AspectRatioPreset, resolution: { width: number; height: number }) => void;
   /** Cleans up action clips that reference non-existent desktop app instances. */
   pruneOrphanedActions: () => void;
+  /** Adds a Track Mouse action clip to the Actions track covering a time range. */
+  addTrackMouseAction: (options?: {
+    startFrame?: Frame;
+    durationFrames?: number;
+    zoom?: number;
+    smoothingMs?: number;
+  }) => Id;
 
   undo: () => void;
   redo: () => void;
@@ -537,6 +548,17 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
           clip.content.kind === "plugin" &&
           clip.content.data &&
           typeof clip.content.data === "object" &&
+          (clip.content.data as Record<string, unknown>).action === "trackMouse"
+        ) {
+          // trackMouse is never an orphaned action: it scopes to coincident video, not an app instance
+          clips[id] = clip;
+          continue;
+        }
+
+        if (
+          clip.content.kind === "plugin" &&
+          clip.content.data &&
+          typeof clip.content.data === "object" &&
           "instanceId" in clip.content.data &&
           typeof (clip.content.data as Record<string, unknown>).instanceId === "string" &&
           "action" in (clip.content.data as Record<string, unknown>) &&
@@ -559,6 +581,60 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         `Prune ${prunedCount} orphaned action${prunedCount === 1 ? "" : "s"}`,
       );
     }),
+
+  addTrackMouseAction: (options) => {
+    let createdClipId = "";
+    set((state) => {
+      // Find or create an action track
+      let actionTrack = Object.values(state.project.entities.tracks).find(
+        (t) => t.kind === "action" || t.name?.toLowerCase().includes("action"),
+      );
+
+      const tracks = { ...state.project.entities.tracks };
+      const trackOrder = [...state.project.trackOrder];
+
+      if (!actionTrack) {
+        actionTrack = createDesktopTrack("action", trackOrder.length, {
+          name: "Actions",
+        });
+        tracks[actionTrack.id] = actionTrack;
+        trackOrder.push(actionTrack.id);
+      }
+
+      const startFrame = options?.startFrame ?? state.playhead;
+      const durationFrames = options?.durationFrames ?? 90; // default 3s at 30fps
+      const clipId = `clip-track-mouse-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      createdClipId = clipId;
+
+      const clip = createTrackMouseClip({
+        id: clipId,
+        trackId: actionTrack.id,
+        startFrame,
+        durationFrames,
+        zoom: options?.zoom ?? 1.5,
+        smoothingMs: options?.smoothingMs ?? 180,
+      });
+
+      const nextProject: ProjectDocument = withDerived({
+        ...state.project,
+        entities: {
+          ...state.project.entities,
+          tracks,
+          clips: {
+            ...state.project.entities.clips,
+            [clip.id]: clip,
+          },
+        },
+        trackOrder,
+      });
+
+      return {
+        ...commit(state, nextProject, "Add Track Mouse action"),
+        selectedClipIds: [clip.id],
+      };
+    });
+    return createdClipId;
+  },
 
   endGesture: () => set((state) => ({ history: historySeal(state.history) })),
 

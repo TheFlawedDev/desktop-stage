@@ -11,7 +11,7 @@
  * every later action feature relies on.
  */
 
-import type { Clip, DesktopActionPayload, ProjectDocument } from "@cutaway/types";
+import type { Clip, DesktopStandardActionKind, DesktopStandardActionPayload, ProjectDocument } from "@cutaway/types";
 import { DESKTOP_CONTENT_TYPES } from "@cutaway/types";
 import { createClip, createId } from "@cutaway/utils";
 import starterFixture from "./__fixtures__/v1-starter-project.json";
@@ -29,7 +29,7 @@ interface StarterAction {
   instanceId: string;
   startFrame: number;
   durationFrames: number;
-  action: DesktopActionPayload["action"];
+  action: DesktopStandardActionKind;
   text?: string;
 }
 
@@ -81,7 +81,7 @@ export function starterV1Project(): V1Project {
 }
 
 function createActionClip(action: StarterAction): Clip {
-  const payload: DesktopActionPayload = {
+  const payload: DesktopStandardActionPayload = {
     instanceId: action.instanceId,
     action: action.action,
     ...(action.text ? { text: action.text } : {}),

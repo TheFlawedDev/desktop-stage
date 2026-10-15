@@ -353,7 +353,15 @@ function drawClip(
   theme: TimelineTheme,
 ): void {
   const { clip } = rect;
-  const color = theme.clipColors[clip.content.kind] ?? theme.clipColors.video ?? "#5b6ee0";
+  let color = theme.clipColors[clip.content.kind] ?? theme.clipColors.video ?? "#5b6ee0";
+  if (
+    clip.content.kind === "plugin" &&
+    clip.content.data &&
+    typeof clip.content.data === "object" &&
+    (clip.content.data as Record<string, unknown>).action === "trackMouse"
+  ) {
+    color = "#10b981"; // Emerald green for Track Mouse action clips
+  }
 
   const x = Math.round(rect.x);
   const y = Math.round(rect.y) + 1;

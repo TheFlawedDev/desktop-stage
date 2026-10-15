@@ -97,19 +97,41 @@ export interface DesktopAppPayload {
   initiallyVisible: boolean;
 }
 
-/** Timed effects an action clip can apply to an app instance. */
-export type DesktopActionKind = "open" | "close" | "focus" | "setTitle" | "appendLine";
+/** Timed effects an action clip can apply to a standard app instance. */
+export type DesktopStandardActionKind =
+  | "open"
+  | "close"
+  | "focus"
+  | "setTitle"
+  | "appendLine";
 
-export interface DesktopActionPayload {
+/** Timed effects an action clip can apply to an app instance or camera tracking. */
+export type DesktopActionKind = DesktopStandardActionKind | "trackMouse";
+
+export interface DesktopStandardActionPayload {
   /** The app instance this action targets. Must exist in the document. */
   instanceId: Id;
-  action: DesktopActionKind;
+  action: DesktopStandardActionKind;
   /**
    * Text argument for `setTitle` and `appendLine`; absent for actions that take
    * none. Kept as a plain string so the payload stays JSON-only.
    */
   text?: string;
 }
+
+export interface DesktopTrackMouseActionPayload {
+  action: "trackMouse";
+  /** Optional app instance; trackMouse acts on the coincident video clip. */
+  instanceId?: Id;
+  /** Zoom factor during mouse tracking; defaults to 1.5. */
+  zoom?: number;
+  /** Camera follow smoothing window in ms; defaults to 180. */
+  smoothingMs?: number;
+}
+
+export type DesktopActionPayload =
+  | DesktopStandardActionPayload
+  | DesktopTrackMouseActionPayload;
 
 /** The simulated pointer, expressed as waypoints it travels through. */
 export interface DesktopCursorPayload {

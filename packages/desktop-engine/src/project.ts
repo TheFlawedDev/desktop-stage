@@ -17,6 +17,7 @@ import type {
   ClipContent,
   DesktopActionKind,
   DesktopActionPayload,
+  DesktopStandardActionPayload,
   DesktopAppKind,
   DesktopAppLook,
   DesktopAppPayload,
@@ -64,6 +65,7 @@ export const DESKTOP_ACTION_KINDS: readonly DesktopActionKind[] = [
   "focus",
   "setTitle",
   "appendLine",
+  "trackMouse",
 ];
 
 export const DEFAULT_DESKTOP_LOOK: DesktopAppLook = {
@@ -321,13 +323,42 @@ function parseAppPayload(data: Record<string, unknown>): PayloadResult<DesktopAp
 }
 
 function parseActionPayload(data: Record<string, unknown>): PayloadResult<DesktopActionPayload> {
-  const instanceId = readString(data.instanceId);
-  if (!instanceId) return { ok: false, message: "instanceId must be a non-empty string." };
-
   const action = readString(data.action);
   if (!action || !DESKTOP_ACTION_KINDS.includes(action as DesktopActionKind)) {
     return { ok: false, message: `action must be one of ${DESKTOP_ACTION_KINDS.join(", ")}.` };
   }
+
+  if (action === "trackMouse") {
+    let zoom: number | undefined;
+    if (data.zoom !== undefined) {
+      if (!isFiniteNumber(data.zoom) || data.zoom < 1.0) {
+        return { ok: false, message: "zoom must be a finite number >= 1.0." };
+      }
+      zoom = data.zoom;
+    }
+
+    let smoothingMs: number | undefined;
+    if (data.smoothingMs !== undefined) {
+      if (!isFiniteNumber(data.smoothingMs) || data.smoothingMs < 0) {
+        return { ok: false, message: "smoothingMs must be a finite, non-negative number." };
+      }
+      smoothingMs = data.smoothingMs;
+    }
+
+    const instanceId = readString(data.instanceId) ?? undefined;
+    return {
+      ok: true,
+      payload: {
+        action: "trackMouse",
+        ...(instanceId ? { instanceId } : {}),
+        ...(zoom !== undefined ? { zoom } : {}),
+        ...(smoothingMs !== undefined ? { smoothingMs } : {}),
+      },
+    };
+  }
+
+  const instanceId = readString(data.instanceId);
+  if (!instanceId) return { ok: false, message: "instanceId must be a non-empty string." };
 
   const text = data.text;
   if (text !== undefined && typeof text !== "string") {
@@ -340,7 +371,14 @@ function parseActionPayload(data: Record<string, unknown>): PayloadResult<Deskto
     return { ok: false, message: `action "${action}" requires text.` };
   }
 
-  return { ok: true, payload: { instanceId, action: action as DesktopActionKind, ...(text ? { text } : {}) } };
+  return {
+    ok: true,
+    payload: {
+      instanceId,
+      action: action as DesktopStandardActionPayload["action"],
+      ...(text ? { text } : {}),
+    },
+  };
 }
 
 function parseCursorPayload(data: Record<string, unknown>): PayloadResult<DesktopCursorPayload> {
@@ -528,6 +566,38 @@ export function createAppClip(options: CreateAppClipOptions): Clip {
       data: options.payload as unknown as Record<string, unknown>,
     },
     ...(options.name ? { name: options.name } : {}),
+  });
+}
+
+export interface CreateTrackMouseClipOptions {
+  id: Id;
+  trackId: Id;
+  startFrame: number;
+  durationFrames: number;
+  zoom?: number;
+  smoothingMs?: number;
+  name?: string;
+}
+
+/**
+ * Creates an action clip that triggers smoothed mouse camera tracking over coincident video.
+ */
+export function createTrackMouseClip(options: CreateTrackMouseClipOptions): Clip {
+  return createClip({
+    id: options.id,
+    trackId: options.trackId,
+    startFrame: options.startFrame,
+    durationFrames: options.durationFrames,
+    content: {
+      kind: "plugin",
+      contentType: DESKTOP_CONTENT_TYPES.action,
+      data: {
+        action: "trackMouse",
+        ...(options.zoom !== undefined ? { zoom: options.zoom } : {}),
+        ...(options.smoothingMs !== undefined ? { smoothingMs: options.smoothingMs } : {}),
+      },
+    },
+    name: options.name ?? "Track Mouse",
   });
 }
 

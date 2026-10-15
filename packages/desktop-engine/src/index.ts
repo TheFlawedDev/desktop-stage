@@ -26,3 +26,4 @@ export * from "./stage/apps";
 export * from "./stage/recorder";
 export * from "./stage/effects";
 export * from "./stage/telemetry/StageDiagnostics";
+export * from "./stageMediaUtils";

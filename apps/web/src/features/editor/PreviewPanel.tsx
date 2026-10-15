@@ -21,6 +21,7 @@ import { importFile } from "@cutaway/media-engine";
 import type { StageTakeManifest, Rect } from "@cutaway/types";
 import {
   MouseFollowCamera,
+  resolveDesktopFrame,
   stageDiagnostics,
 } from "@desktop-stage/desktop-engine";
 import { useEditorStore } from "@/state/editorStore";
@@ -55,6 +56,7 @@ export function PreviewPanel() {
   const background = useEditorStore(
     (state) => state.project.settings.backgroundColor,
   );
+  const project = useEditorStore((state) => state.project);
   const playhead = useEditorStore((state) => state.playhead);
   const duration = useEditorStore((state) => state.project.durationFrames);
   const fps = useEditorStore((state) => state.project.settings.frameRate);
@@ -67,6 +69,9 @@ export function PreviewPanel() {
   const setPlayhead = useEditorStore((state) => state.setPlayhead);
   const addMediaAssets = useEditorStore((state) => state.addMediaAssets);
   const addClipFromAsset = useEditorStore((state) => state.addClipFromAsset);
+  const addTrackMouseAction = useEditorStore(
+    (state) => state.addTrackMouseAction,
+  );
   const setTrackFlag = useEditorStore((state) => state.setTrackFlag);
   const { store } = useMediaImportContext();
 
@@ -85,11 +90,16 @@ export function PreviewPanel() {
   const [takeNotice, setTakeNotice] = useState<string | null>(null);
   const [showDebugHud, setShowDebugHud] = useState(false);
 
-  // Take review and 1.5x mouse follow camera
+  // Take review and mouse follow camera
   const [lastTake, setLastTake] = useState<StageTakeManifest | null>(null);
-  const [trackMouseEnabled, setTrackMouseEnabled] = useState(false);
-  const [previewScrubMs, setPreviewScrubMs] = useState(0);
   const camera = useMemo(() => new MouseFollowCamera(), []);
+
+  // Resolve current desktop frame and camera tracking from timeline action clips
+  const resolvedDesktop = useMemo(
+    () => resolveDesktopFrame(project, playhead),
+    [project, playhead],
+  );
+  const activeCamera = resolvedDesktop.camera;
 
   const containerSize = useElementSize(containerRef);
 
@@ -152,8 +162,6 @@ export function PreviewPanel() {
       }
 
       setLastTake(manifest);
-      setTrackMouseEnabled(false);
-      setPreviewScrubMs(0);
 
       setTakeNotice(
         `Take recorded (${(manifest.durationMs / 1000).toFixed(1)}s) added to timeline`,
@@ -168,19 +176,23 @@ export function PreviewPanel() {
     }
   };
 
-  // Compute camera follow view if trackMouse is enabled
+  // Compute camera follow view if an active trackMouse timeline action is resolving at playhead
   const cameraView = useMemo(() => {
-    if (!lastTake || !trackMouseEnabled) return null;
-    const currentMs =
-      workspaceMode === "interactive"
-        ? previewScrubMs
-        : Math.min(lastTake.durationMs, Math.max(0, (playhead / fps) * 1000));
+    if (!lastTake || !activeCamera.active) return null;
+    const targetClip = activeCamera.targetVideoClipId
+      ? project.entities.clips[activeCamera.targetVideoClipId]
+      : undefined;
+    const clipStartFrame = targetClip?.startFrame ?? 0;
+    const currentMs = Math.min(
+      lastTake.durationMs,
+      Math.max(0, ((playhead - clipStartFrame) / fps) * 1000),
+    );
     try {
       return camera.computeSmoothedView(
         lastTake.pointerEvents,
         currentMs,
         lastTake.recordingRect,
-        1.5,
+        activeCamera.zoom,
       );
     } catch {
       return null;
@@ -188,15 +200,16 @@ export function PreviewPanel() {
   }, [
     camera,
     lastTake,
-    trackMouseEnabled,
-    workspaceMode,
-    previewScrubMs,
+    activeCamera.active,
+    activeCamera.zoom,
+    activeCamera.targetVideoClipId,
+    project.entities.clips,
     playhead,
     fps,
   ]);
 
   const shouldApplyCameraFollow =
-    workspaceMode === "preview" && trackMouseEnabled && Boolean(cameraView);
+    workspaceMode === "preview" && activeCamera.active && Boolean(cameraView);
 
   return (
     <div className="bg-surface-base flex h-full flex-col">
@@ -211,7 +224,7 @@ export function PreviewPanel() {
               backgroundColor: background,
             }}
           >
-            {/* 1.5x Mouse-Follow Camera Zoom Wrapper */}
+            {/* Mouse-Follow Camera Zoom Wrapper */}
             <div
               className="relative h-full w-full"
               style={
@@ -288,11 +301,11 @@ export function PreviewPanel() {
               )}
             </div>
 
-            {/* 1.5x Camera Active Indicator Overlay */}
+            {/* Camera Active Indicator Overlay */}
             {shouldApplyCameraFollow && (
               <div className="pointer-events-none absolute top-3 left-3 z-40 flex items-center gap-1.5 rounded-full bg-emerald-500/90 px-3 py-1 text-2xs font-semibold text-black shadow-lg backdrop-blur-xs animate-fade-in">
                 <Sparkles size={12} className="fill-current" />
-                <span>1.5× MOUSE FOLLOW ACTIVE</span>
+                <span>{activeCamera.zoom}× MOUSE FOLLOW ACTIVE</span>
               </div>
             )}
           </div>
@@ -313,43 +326,42 @@ export function PreviewPanel() {
             </div>
 
             <button
-              onClick={() => setTrackMouseEnabled((prev) => !prev)}
-              className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-2xs font-medium transition-all ${
-                trackMouseEnabled
-                  ? "bg-emerald-600 text-white shadow-xs font-semibold"
-                  : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
-              }`}
-              title="Toggle 1.5× smoothed camera tracking of the recorded mouse pointer"
+              onClick={() => {
+                const durFrames = Math.max(
+                  1,
+                  Math.round((lastTake.durationMs / 1000) * fps),
+                );
+                addTrackMouseAction({
+                  startFrame: 0,
+                  durationFrames: durFrames,
+                  zoom: 1.5,
+                });
+                setTakeNotice(
+                  "Track Mouse action added to Actions track on timeline",
+                );
+                setTimeout(() => setTakeNotice(null), 4000);
+              }}
+              className="flex items-center gap-1.5 rounded px-2.5 py-1 text-2xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 shadow-xs transition-all cursor-pointer"
+              title="Add Track Mouse action clip to the Actions track on the timeline"
             >
-              <Sparkles
-                size={12}
-                className={trackMouseEnabled ? "fill-current" : ""}
-              />
-              {trackMouseEnabled
-                ? "Track Mouse (1.5× Follow On)"
-                : "Track Mouse (1.5×)"}
+              <Sparkles size={12} className="fill-current" />
+              + Add Track Mouse Action to Timeline
             </button>
 
-            {trackMouseEnabled && workspaceMode === "interactive" && (
-              <div className="flex items-center gap-2">
-                <span className="text-2xs font-mono text-zinc-400">Scrub:</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={lastTake.durationMs}
-                  value={previewScrubMs}
-                  onChange={(e) => setPreviewScrubMs(Number(e.target.value))}
-                  className="w-36 accent-emerald-500 h-1.5 bg-zinc-700 rounded-lg cursor-pointer"
-                />
-                <span className="text-2xs font-mono text-zinc-300">
-                  {previewScrubMs}ms
-                </span>
-              </div>
+            {activeCamera.active ? (
+              <span className="flex items-center gap-1 text-2xs font-medium text-emerald-400">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                Camera Follow Active ({activeCamera.zoom}×)
+              </span>
+            ) : (
+              <span className="text-2xs text-zinc-400">
+                (Camera follow active when playhead is over a Track Mouse action)
+              </span>
             )}
           </div>
 
           <div className="text-2xs text-zinc-400 flex items-center gap-2">
-            <span>1.5× camera math computed deterministically via</span>
+            <span>Camera follow math computed via</span>
             <span className="font-mono text-emerald-400 font-medium">
               MouseFollowCamera
             </span>
@@ -501,7 +513,7 @@ export function PreviewPanel() {
         <StageDebugHUD
           onClose={() => setShowDebugHud(false)}
           workspaceMode={workspaceMode}
-          trackMouseEnabled={trackMouseEnabled}
+          trackMouseEnabled={activeCamera.active}
           isRecording={isRecording}
         />
       )}
