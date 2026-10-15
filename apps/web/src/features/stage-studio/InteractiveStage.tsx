@@ -124,7 +124,11 @@ export function drawLucideIcon(
 }
 
 export interface InteractiveStageHandle {
-  startRecording: (mode: "full" | "selected-area", selectedCrop?: Rect) => void;
+  startRecording: (
+    mode: "full" | "selected-area",
+    selectedCrop?: Rect,
+    engine?: "canvas" | "display-media",
+  ) => void;
   stopRecording: () => Promise<{ blob: Blob; manifest: StageTakeManifest }>;
   isRecording: () => boolean;
 }
@@ -374,6 +378,15 @@ export const InteractiveStage = forwardRef<
   finderFilesRef.current = finderFiles;
   const arcActiveUrlRef = useRef(arcActiveUrl);
   arcActiveUrlRef.current = arcActiveUrl;
+  const arcSearchResultsRef = useRef(arcSearchResults);
+  arcSearchResultsRef.current = arcSearchResults;
+  const arcSearchQueryRef = useRef(arcSearchQuery);
+  arcSearchQueryRef.current = arcSearchQuery;
+  const arcReaderModeRef = useRef(arcReaderMode);
+  arcReaderModeRef.current = arcReaderMode;
+  const isArcSearchingRef = useRef(isArcSearching);
+  isArcSearchingRef.current = isArcSearching;
+  const displayStreamRef = useRef<MediaStream | null>(null);
 
   // Responsive scaling
   const scale = Math.max(
@@ -799,20 +812,20 @@ export const InteractiveStage = forwardRef<
         url: urls[idx] || `https://en.m.wikipedia.org/wiki/${encodeURIComponent(title)}`,
       }));
 
-      // Add a web proxy search option
+      // Add a web search option
       results.push({
-        title: `Search Web for "${query}"`,
-        snippet: `Browse comprehensive web results for "${query}" with proxy bypass.`,
-        url: `/api/proxy?url=${encodeURIComponent(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`)}`,
+        title: `Search DuckDuckGo for "${query}"`,
+        snippet: `Browse comprehensive web results for "${query}" with privacy.`,
+        url: `https://duckduckgo.com/?q=${encodeURIComponent(query)}`,
       });
 
       setArcSearchResults(results);
     } catch {
       setArcSearchResults([
         {
-          title: `Web search: "${query}"`,
-          snippet: `Browse results for "${query}" via embed proxy.`,
-          url: `/api/proxy?url=${encodeURIComponent(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`)}`,
+          title: `DuckDuckGo: "${query}"`,
+          snippet: `Browse search results for "${query}".`,
+          url: `https://duckduckgo.com/?q=${encodeURIComponent(query)}`,
         },
       ]);
     } finally {
@@ -820,11 +833,11 @@ export const InteractiveStage = forwardRef<
     }
   };
 
-  // Arc navigation with smart search and proxy support
+  // Arc navigation with smart search
   const handleArcNavigate = (input: string) => {
     const trimmed = input.trim();
     if (!trimmed) return;
-    if (trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("/api/proxy")) {
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
       setArcUrl(trimmed);
       setArcActiveUrl(trimmed);
       setArcSearchResults(null);
@@ -869,14 +882,38 @@ export const InteractiveStage = forwardRef<
       ctx.save();
       ctx.scale(DPR, DPR);
 
-      // 1. Desktop Wallpaper Background - aligned to global stage coordinates
+      // 1. Desktop Wallpaper Background - aligned to global stage coordinates with cover aspect ratio
       if (wallpaper === "custom" && customWallpaperImgRef.current) {
+        const img = customWallpaperImgRef.current;
+        const imgW = img.naturalWidth || img.width || STAGE_WIDTH;
+        const imgH = img.naturalHeight || img.height || STAGE_HEIGHT;
+        const imgRatio = imgW / imgH;
+        const stageRatio = STAGE_WIDTH / STAGE_HEIGHT;
+        let drawW = STAGE_WIDTH;
+        let drawH = STAGE_HEIGHT;
+        let drawX = 0;
+        let drawY = 0;
+
+        if (imgRatio > stageRatio) {
+          // Wider than 16:9 stage: match height, crop overflow on sides
+          drawH = STAGE_HEIGHT;
+          drawW = STAGE_HEIGHT * imgRatio;
+          drawX = (STAGE_WIDTH - drawW) / 2;
+          drawY = 0;
+        } else {
+          // Taller than 16:9 stage: match width, crop overflow on top/bottom
+          drawW = STAGE_WIDTH;
+          drawH = STAGE_WIDTH / imgRatio;
+          drawX = 0;
+          drawY = (STAGE_HEIGHT - drawH) / 2;
+        }
+
         ctx.drawImage(
-          customWallpaperImgRef.current,
-          -recRect.x,
-          -recRect.y,
-          STAGE_WIDTH,
-          STAGE_HEIGHT,
+          img,
+          drawX - recRect.x,
+          drawY - recRect.y,
+          drawW,
+          drawH,
         );
       } else {
         const bgGrad = ctx.createLinearGradient(
@@ -1253,32 +1290,296 @@ export const InteractiveStage = forwardRef<
           ctx.fillText("+ Create", rx + rw - 38, fby + 16);
           ctx.textAlign = "left";
         } else if (win.appKind === "arc") {
+          // Arc browser background
           ctx.fillStyle = "#18181b";
           ctx.fillRect(rx, cy, rw, ch);
+
+          // 1. Navigation / Address Bar matching DOM
+          const navH = 34;
+          ctx.fillStyle = "#18181b";
+          ctx.fillRect(rx, cy, rw, navH);
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+          ctx.beginPath();
+          ctx.moveTo(rx, cy + navH);
+          ctx.lineTo(rx + rw, cy + navH);
+          ctx.stroke();
+
+          // Input pill
+          const addrW = rw - 130;
+          ctx.fillStyle = "#09090b";
+          ctx.beginPath();
+          ctx.roundRect(rx + 8, cy + 4, addrW, 26, 6);
+          ctx.fill();
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
+          ctx.stroke();
+
+          ctx.fillStyle = "#818cf8";
+          ctx.font = "11px sans-serif";
+          ctx.fillText("🌐", rx + 14, cy + 21);
+
+          const currentUrlText = arcActiveUrlRef.current || "https://en.m.wikipedia.org";
+          ctx.fillStyle = "#e4e4e7";
+          ctx.font = "11px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+          const maxUrlLen = Math.max(10, Math.floor((addrW - 40) / 6.5));
+          const displayUrl = currentUrlText.length > maxUrlLen ? currentUrlText.slice(0, maxUrlLen) + "…" : currentUrlText;
+          ctx.fillText(displayUrl, rx + 32, cy + 21);
+
+          // Reader mode pill button
+          const readerBtnX = rx + rw - 116;
+          const isReader = arcReaderModeRef.current;
+          ctx.fillStyle = isReader ? "rgba(99, 102, 241, 0.3)" : "#27272a";
+          ctx.beginPath();
+          ctx.roundRect(readerBtnX, cy + 5, 52, 24, 4);
+          ctx.fill();
+          ctx.strokeStyle = isReader ? "rgba(99, 102, 241, 0.6)" : "rgba(255, 255, 255, 0.1)";
+          ctx.stroke();
+          ctx.fillStyle = isReader ? "#c7d2fe" : "#a1a1aa";
+          ctx.font = "bold 9.5px sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText("📖 Reader", readerBtnX + 26, cy + 21);
+
+          // Search button
+          const searchBtnX = rx + rw - 58;
           ctx.fillStyle = "#27272a";
           ctx.beginPath();
-          ctx.roundRect(rx + 12, cy + 8, rw - 24, 26, 6);
+          ctx.roundRect(searchBtnX, cy + 5, 50, 24, 4);
           ctx.fill();
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+          ctx.stroke();
           ctx.fillStyle = "#a1a1aa";
-          ctx.font = "11px sans-serif";
-          ctx.fillText(
-            "🔒 " + (arcActiveUrlRef.current || "https://example.com"),
-            rx + 24,
-            cy + 25,
-          );
+          ctx.fillText("🔍 Search", searchBtnX + 25, cy + 21);
+          ctx.textAlign = "left";
 
-          ctx.fillStyle = "#0f172a";
-          ctx.fillRect(rx + 12, cy + 42, rw - 24, ch - 54);
-          ctx.fillStyle = "#818cf8";
-          ctx.font = "bold 14px sans-serif";
-          ctx.fillText("Arc Sandboxed Browser", rx + 28, cy + 72);
-          ctx.fillStyle = "#94a3b8";
-          ctx.font = "11px sans-serif";
-          ctx.fillText(
-            "DuckDuckGo search • Real webview navigation",
-            rx + 28,
-            cy + 94,
-          );
+          // 2. Bookmarks Bar
+          const bmH = 22;
+          const bmY = cy + navH;
+          ctx.fillStyle = "#121214";
+          ctx.fillRect(rx, bmY, rw, bmH);
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
+          ctx.beginPath();
+          ctx.moveTo(rx, bmY + bmH);
+          ctx.lineTo(rx + rw, bmY + bmH);
+          ctx.stroke();
+
+          const bms = ["Wikipedia", "DuckDuckGo", "DevDocs", "Example Domain", "Hacker News"];
+          let bmx = rx + 8;
+          ctx.font = "9.5px -apple-system, sans-serif";
+          for (const b of bms) {
+            const bw = ctx.measureText(b).width + 12;
+            if (bmx + bw > rx + rw - 8) break;
+            ctx.fillStyle = "#27272a";
+            ctx.beginPath();
+            ctx.roundRect(bmx, bmY + 3, bw, 16, 3);
+            ctx.fill();
+            ctx.fillStyle = "#a1a1aa";
+            ctx.fillText(b, bmx + 6, bmY + 14);
+            bmx += bw + 6;
+          }
+
+          // 3. Webview Content Area
+          const contentY = bmY + bmH;
+          const contentH = ch - navH - bmH;
+
+          if (isArcSearchingRef.current) {
+            ctx.fillStyle = "#09090b";
+            ctx.fillRect(rx, contentY, rw, contentH);
+            ctx.fillStyle = "#818cf8";
+            ctx.font = "bold 13px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText("Searching the web…", rx + rw / 2, contentY + contentH / 2 - 10);
+            ctx.fillStyle = "#a1a1aa";
+            ctx.font = "11px monospace";
+            ctx.fillText(`"${arcSearchQueryRef.current}"`, rx + rw / 2, contentY + contentH / 2 + 12);
+            ctx.textAlign = "left";
+          } else if (arcSearchResultsRef.current && arcSearchResultsRef.current.length > 0) {
+            ctx.fillStyle = "#09090b";
+            ctx.fillRect(rx, contentY, rw, contentH);
+
+            // Results header
+            ctx.fillStyle = "#e4e4e7";
+            ctx.font = "bold 11px sans-serif";
+            ctx.fillText(`Results for "${arcSearchQueryRef.current || "search"}"`, rx + 14, contentY + 18);
+            ctx.fillStyle = "#71717a";
+            ctx.font = "10px sans-serif";
+            ctx.fillText(`${arcSearchResultsRef.current.length} results found`, rx + rw - 110, contentY + 18);
+
+            // Draw cards
+            let cardY = contentY + 28;
+            for (const item of arcSearchResultsRef.current.slice(0, 4)) {
+              if (cardY + 52 > cy + ch - 6) break;
+              ctx.fillStyle = "#18181b";
+              ctx.beginPath();
+              ctx.roundRect(rx + 12, cardY, rw - 24, 50, 6);
+              ctx.fill();
+              ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+              ctx.stroke();
+
+              ctx.fillStyle = "#93c5fd";
+              ctx.font = "bold 11px sans-serif";
+              const titleMax = Math.max(10, Math.floor((rw - 40) / 7));
+              const dTitle = item.title.length > titleMax ? item.title.slice(0, titleMax) + "…" : item.title;
+              ctx.fillText(dTitle, rx + 20, cardY + 15);
+
+              ctx.fillStyle = "#a1a1aa";
+              ctx.font = "10px sans-serif";
+              const snipMax = Math.max(15, Math.floor((rw - 40) / 6));
+              const dSnip = item.snippet.length > snipMax ? item.snippet.slice(0, snipMax) + "…" : item.snippet;
+              ctx.fillText(dSnip, rx + 20, cardY + 30);
+
+              ctx.fillStyle = "#6366f1";
+              ctx.font = "9px monospace";
+              const urlMax = Math.max(15, Math.floor((rw - 40) / 6));
+              const dUrl = item.url.length > urlMax ? item.url.slice(0, urlMax) + "…" : item.url;
+              ctx.fillText(dUrl, rx + 20, cardY + 43);
+
+              cardY += 56;
+            }
+          } else if (arcReaderModeRef.current) {
+            ctx.fillStyle = "#18181b";
+            ctx.fillRect(rx, contentY, rw, contentH);
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 13px -apple-system, BlinkMacSystemFont, sans-serif";
+            ctx.fillText("Arc Reader View", rx + 20, contentY + 24);
+            ctx.fillStyle = "#818cf8";
+            ctx.font = "10px monospace";
+            ctx.fillText(currentUrlText, rx + 20, contentY + 40);
+
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+            ctx.beginPath();
+            ctx.moveTo(rx + 20, contentY + 48);
+            ctx.lineTo(rx + rw - 20, contentY + 48);
+            ctx.stroke();
+
+            ctx.fillStyle = "#d4d4d8";
+            ctx.font = "11px -apple-system, BlinkMacSystemFont, sans-serif";
+            ctx.fillText("Clean distraction-free reading mode.", rx + 20, contentY + 68);
+            ctx.fillText("Web content is formatted for legibility and video demonstration.", rx + 20, contentY + 86);
+            ctx.fillText("Source document: " + currentUrlText, rx + 20, contentY + 104);
+          } else {
+            // Live web view representations matching standard sites
+            if (currentUrlText.includes("wikipedia.org")) {
+              ctx.fillStyle = "#ffffff";
+              ctx.fillRect(rx, contentY, rw, contentH);
+
+              // Wikipedia header
+              ctx.fillStyle = "#f8f9fa";
+              ctx.fillRect(rx, contentY, rw, 30);
+              ctx.strokeStyle = "#a2a9b1";
+              ctx.beginPath();
+              ctx.moveTo(rx, contentY + 30);
+              ctx.lineTo(rx + rw, contentY + 30);
+              ctx.stroke();
+
+              ctx.fillStyle = "#202122";
+              ctx.font = "bold 12px 'Georgia', serif";
+              ctx.fillText("WIKIPEDIA", rx + 16, contentY + 20);
+              ctx.font = "italic 9px 'Georgia', serif";
+              ctx.fillStyle = "#54595d";
+              ctx.fillText("The Free Encyclopedia", rx + 90, contentY + 20);
+
+              // Article content
+              const parts = currentUrlText.split("/");
+              const rawArticle = parts[parts.length - 1] || "Main_Page";
+              const articleName = decodeURIComponent(rawArticle).replace(/_/g, " ");
+
+              ctx.fillStyle = "#000000";
+              ctx.font = "bold 15px 'Georgia', serif";
+              ctx.fillText(articleName, rx + 16, contentY + 54);
+
+              ctx.strokeStyle = "#a2a9b1";
+              ctx.beginPath();
+              ctx.moveTo(rx + 16, contentY + 62);
+              ctx.lineTo(rx + rw - 16, contentY + 62);
+              ctx.stroke();
+
+              ctx.fillStyle = "#202122";
+              ctx.font = "11px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+              ctx.fillText(`${articleName} is an encyclopedia topic documented on Wikipedia.`, rx + 16, contentY + 80);
+              ctx.fillText("From the free collaborative encyclopedia edited by volunteers worldwide.", rx + 16, contentY + 96);
+              ctx.fillText("Explore references, history, and community contributions.", rx + 16, contentY + 112);
+
+              // Simulated link tags
+              ctx.fillStyle = "#3366cc";
+              ctx.fillText("• References and external sources", rx + 16, contentY + 132);
+              ctx.fillText("• Related topics and category indices", rx + 16, contentY + 148);
+            } else if (currentUrlText.includes("duckduckgo.com")) {
+              ctx.fillStyle = "#1e1e24";
+              ctx.fillRect(rx, contentY, rw, contentH);
+
+              ctx.fillStyle = "#de5833";
+              ctx.font = "bold 16px sans-serif";
+              ctx.textAlign = "center";
+              ctx.fillText("🦆 DuckDuckGo", rx + rw / 2, contentY + 38);
+
+              ctx.fillStyle = "#9ca3af";
+              ctx.font = "10.5px sans-serif";
+              ctx.fillText("Privacy, simplified. Search without being tracked.", rx + rw / 2, contentY + 56);
+
+              // Search box
+              ctx.fillStyle = "#2d2d38";
+              ctx.beginPath();
+              ctx.roundRect(rx + rw / 2 - 110, contentY + 70, 220, 26, 13);
+              ctx.fill();
+              ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+              ctx.stroke();
+
+              ctx.fillStyle = "#d1d5db";
+              ctx.font = "10.5px sans-serif";
+              ctx.fillText("Search the web privately...", rx + rw / 2, contentY + 87);
+              ctx.textAlign = "left";
+            } else if (currentUrlText.includes("devdocs.io")) {
+              ctx.fillStyle = "#1c1c1f";
+              ctx.fillRect(rx, contentY, rw, contentH);
+
+              // Devdocs sidebar
+              ctx.fillStyle = "#161618";
+              ctx.fillRect(rx, contentY, 75, contentH);
+              ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+              ctx.beginPath();
+              ctx.moveTo(rx + 75, contentY);
+              ctx.lineTo(rx + 75, contentY + contentH);
+              ctx.stroke();
+
+              ctx.fillStyle = "#6366f1";
+              ctx.font = "bold 11px sans-serif";
+              ctx.fillText("DevDocs", rx + 10, contentY + 20);
+
+              const apis = ["HTML", "CSS", "JavaScript", "React", "Node.js", "Python"];
+              let ay = contentY + 38;
+              ctx.fillStyle = "#9ca3af";
+              ctx.font = "9px sans-serif";
+              for (const api of apis) {
+                ctx.fillText(api, rx + 10, ay);
+                ay += 16;
+              }
+
+              // Main docs body
+              ctx.fillStyle = "#ffffff";
+              ctx.font = "bold 14px -apple-system, sans-serif";
+              ctx.fillText("Developer Documentation Reference", rx + 90, contentY + 25);
+              ctx.fillStyle = "#a1a1aa";
+              ctx.font = "10.5px -apple-system, sans-serif";
+              ctx.fillText("Fast, offline, and mobile-friendly documentation for web technologies.", rx + 90, contentY + 44);
+              ctx.fillText("Instant lookup with keyboard shortcuts and comprehensive API guides.", rx + 90, contentY + 60);
+            } else {
+              // Standard domain (e.g. example.com)
+              ctx.fillStyle = "#fdfdfd";
+              ctx.fillRect(rx, contentY, rw, contentH);
+
+              ctx.fillStyle = "#111827";
+              ctx.font = "bold 16px -apple-system, BlinkMacSystemFont, sans-serif";
+              ctx.fillText("Example Domain", rx + 20, contentY + 36);
+
+              ctx.fillStyle = "#374151";
+              ctx.font = "10.5px -apple-system, BlinkMacSystemFont, sans-serif";
+              ctx.fillText("This domain is for use in illustrative examples in documents.", rx + 20, contentY + 58);
+              ctx.fillText("You may use this domain in literature without prior coordination.", rx + 20, contentY + 74);
+
+              ctx.fillStyle = "#2563eb";
+              ctx.font = "10.5px -apple-system, BlinkMacSystemFont, sans-serif";
+              ctx.fillText("More information...", rx + 20, contentY + 96);
+            }
+          }
         } else if (win.appKind === "quicktime") {
           const videoEl = quickTimeVideoRef.current;
           if (videoEl && videoEl.readyState >= 2) {
@@ -1555,7 +1856,7 @@ export const InteractiveStage = forwardRef<
     ref,
     () => ({
       isRecording: () => isRecording,
-      startRecording: (mode, crop) => {
+      startRecording: async (mode, crop, engine = "canvas") => {
         const targetMode = mode ?? activeRecordingMode;
         const recCrop = crop ?? selectedCrop;
         const stageRect = {
@@ -1589,6 +1890,52 @@ export const InteractiveStage = forwardRef<
           y: resolved.y + Math.round(resolved.height / 2),
         };
 
+        if (
+          engine === "display-media" &&
+          typeof navigator !== "undefined" &&
+          navigator.mediaDevices?.getDisplayMedia
+        ) {
+          try {
+            const stream = await navigator.mediaDevices.getDisplayMedia({
+              video: { displaySurface: "browser" },
+              audio: false,
+            });
+            displayStreamRef.current = stream;
+            recordedChunksRef.current = [];
+            const candidates = [
+              "video/webm;codecs=vp9",
+              "video/webm;codecs=vp8",
+              "video/webm",
+            ];
+            const mimeType =
+              candidates.find((m) => MediaRecorder.isTypeSupported(m)) ||
+              "video/webm";
+            const recorder = new MediaRecorder(stream, {
+              mimeType,
+              videoBitsPerSecond: 28_000_000,
+            });
+            mediaRecorderRef.current = recorder;
+            recorder.ondataavailable = (e) => {
+              if (e.data && e.data.size > 0)
+                recordedChunksRef.current.push(e.data);
+            };
+            recorder.start(100);
+            setIsRecording(true);
+            setRecordDuration(0);
+            onRecordingStatusChange?.(true, 0);
+            stageDiagnostics.log(
+              "RECORDER",
+              `Started real displayMedia screen recording in mode ${targetMode}`,
+            );
+            return;
+          } catch (err: any) {
+            stageDiagnostics.log(
+              "RECORDER",
+              `displayMedia cancelled or denied (${err?.message}), falling back to canvas recorder`,
+            );
+          }
+        }
+
         startCanvasRecording(resolved);
         setIsRecording(true);
         setRecordDuration(0);
@@ -1609,6 +1956,11 @@ export const InteractiveStage = forwardRef<
         if (recordRafRef.current) {
           cancelAnimationFrame(recordRafRef.current);
           recordRafRef.current = null;
+        }
+
+        if (displayStreamRef.current) {
+          displayStreamRef.current.getTracks().forEach((track) => track.stop());
+          displayStreamRef.current = null;
         }
 
         const recorder = mediaRecorderRef.current;
@@ -2226,24 +2578,31 @@ export const InteractiveStage = forwardRef<
                       <span className="shrink-0 font-medium text-zinc-500">Bookmarks:</span>
                       {[
                         { name: "Wikipedia", url: "https://en.m.wikipedia.org" },
-                        {
-                          name: "DuckDuckGo",
-                          url: `/api/proxy?url=${encodeURIComponent("https://html.duckduckgo.com/html/")}`,
-                        },
+                        { name: "DuckDuckGo", url: "https://duckduckgo.com" },
                         { name: "DevDocs", url: "https://devdocs.io" },
                         { name: "Example Domain", url: "https://example.com" },
-                        {
-                          name: "Hacker News",
-                          url: `/api/proxy?url=${encodeURIComponent("https://news.ycombinator.com")}`,
-                        },
+                        { name: "Hacker News", url: "https://news.ycombinator.com" },
                       ].map((bm) => (
                         <button
                           key={bm.name}
                           onClick={() => {
-                            setArcUrl(bm.url);
-                            setArcActiveUrl(bm.url);
-                            setArcReaderMode(false);
-                            setArcSearchResults(null);
+                            if (bm.name === "DuckDuckGo") {
+                              setArcUrl("https://duckduckgo.com");
+                              setArcActiveUrl("https://duckduckgo.com");
+                              setArcReaderMode(false);
+                              setArcSearchQuery("search");
+                              void performArcSearch("privacy search");
+                            } else if (bm.name === "Hacker News") {
+                              setArcUrl("https://news.ycombinator.com");
+                              setArcActiveUrl("https://news.ycombinator.com");
+                              setArcReaderMode(true);
+                              setArcSearchResults(null);
+                            } else {
+                              setArcUrl(bm.url);
+                              setArcActiveUrl(bm.url);
+                              setArcReaderMode(false);
+                              setArcSearchResults(null);
+                            }
                           }}
                           className="shrink-0 rounded bg-zinc-800/80 px-1.5 py-0.5 hover:bg-zinc-700 hover:text-zinc-200 transition-colors"
                         >

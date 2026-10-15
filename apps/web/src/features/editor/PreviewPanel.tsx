@@ -79,6 +79,9 @@ export function PreviewPanel() {
   const [recordingMode, setRecordingMode] = useState<"full" | "selected-area">(
     "full",
   );
+  const [recordingEngine, setRecordingEngine] = useState<
+    "canvas" | "display-media"
+  >("canvas");
   const [isRecording, setIsRecording] = useState(false);
   const [recordDuration, setRecordDuration] = useState(0);
   const [selectedCrop, setSelectedCrop] = useState<Rect>({
@@ -124,11 +127,12 @@ export function PreviewPanel() {
   const handleStartRecording = () => {
     stageDiagnostics.log(
       "UI",
-      `User initiated recording in mode: ${recordingMode}`,
+      `User initiated recording in mode: ${recordingMode} with engine: ${recordingEngine}`,
     );
     stageRef.current?.startRecording(
       recordingMode,
       recordingMode === "selected-area" ? selectedCrop : undefined,
+      recordingEngine,
     );
   };
 
@@ -431,6 +435,16 @@ export function PreviewPanel() {
                 >
                   <option value="full">Full Desktop (1280×720)</option>
                   <option value="selected-area">Selected Area Crop</option>
+                </select>
+
+                <select
+                  value={recordingEngine}
+                  onChange={(e) => setRecordingEngine(e.target.value as any)}
+                  className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 focus:outline-none"
+                  title="Recording Engine: Canvas (Fast, No Prompt) or Real Screen (DisplayMedia tab record)"
+                >
+                  <option value="canvas">🎨 Canvas (Fast)</option>
+                  <option value="display-media">🖥️ Real Screen Record</option>
                 </select>
 
                 <button
