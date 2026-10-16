@@ -31,6 +31,7 @@ import { MaskOverlay } from "@/features/masks/MaskOverlay";
 import { useElementSize } from "@/hooks/useElementSize";
 import {
   InteractiveStage,
+  computeDesktopDimensions,
   type InteractiveStageHandle,
 } from "@/features/stage-studio/InteractiveStage";
 import { StageDebugHUD } from "@/features/stage-studio/StageDebugHUD";
@@ -79,9 +80,7 @@ export function PreviewPanel() {
   const [recordingMode, setRecordingMode] = useState<"full" | "selected-area">(
     "full",
   );
-  const [recordingEngine, setRecordingEngine] = useState<
-    "canvas" | "display-media"
-  >("canvas");
+  const [recordingEngine, setRecordingEngine] = useState<"canvas" | "display-media">("display-media");
   const [isRecording, setIsRecording] = useState(false);
   const [recordDuration, setRecordDuration] = useState(0);
   const [selectedCrop, setSelectedCrop] = useState<Rect>({
@@ -106,6 +105,14 @@ export function PreviewPanel() {
 
   const containerSize = useElementSize(containerRef);
 
+  // Virtual desktop dimensions for the active project resolution.
+  const desktopDimensions = useMemo(
+    () => computeDesktopDimensions(resolution),
+    [resolution],
+  );
+
+  // Both interactive and preview modes share the same resolution-derived size
+  // so switching between them never rescales or clips the canvas.
   const stageSize = (() => {
     const padding = 32;
     const availableWidth = Math.max(0, containerSize.width - padding);
@@ -116,18 +123,7 @@ export function PreviewPanel() {
     return { width, height: width / projectAspect };
   })();
 
-  const interactiveStageSize = (() => {
-    const padding = 24;
-    const availableWidth = Math.max(0, containerSize.width - padding);
-    const availableHeight = Math.max(0, containerSize.height - padding);
-    const desktopAspect = 1280 / 720;
-
-    const width = Math.min(availableWidth, availableHeight * desktopAspect);
-    return { width, height: width / desktopAspect };
-  })();
-
-  const currentStageSize =
-    workspaceMode === "interactive" ? interactiveStageSize : stageSize;
+  const currentStageSize = stageSize;
 
 
   const handleRecordingStatusChange = useCallback(
@@ -315,6 +311,7 @@ export function PreviewPanel() {
                       ref={stageRef}
                       width={currentStageSize.width}
                       height={currentStageSize.height}
+                      resolution={resolution}
                       onTakeRecorded={handleTakeRecorded}
                       onRecordingStatusChange={handleRecordingStatusChange}
                       selectedCrop={selectedCrop}
@@ -395,13 +392,13 @@ export function PreviewPanel() {
       )}
 
       {/* Bottom Control / Transport Bar */}
-      <div className="border-border-subtle bg-surface-panel flex h-11 shrink-0 items-center justify-between border-t px-3">
+      <div className="border-border-subtle bg-surface-panel flex h-9 shrink-0 items-center justify-between border-t px-3">
         {/* Left: View Mode Tabs & Status */}
         <div className="flex items-center gap-2">
           <div className="flex items-center rounded-md bg-zinc-800 p-0.5 border border-zinc-700">
             <button
               onClick={() => setWorkspaceMode("interactive")}
-              className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+              className={`flex h-6.5 items-center gap-1.5 whitespace-nowrap rounded px-2.5 text-xs font-medium transition-colors ${
                 workspaceMode === "interactive"
                   ? "bg-accent text-accent-text shadow-xs"
                   : "text-zinc-400 hover:text-zinc-200"
@@ -413,7 +410,7 @@ export function PreviewPanel() {
             </button>
             <button
               onClick={() => setWorkspaceMode("preview")}
-              className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+              className={`flex h-6.5 items-center gap-1.5 whitespace-nowrap rounded px-2.5 text-xs font-medium transition-colors ${
                 workspaceMode === "preview"
                   ? "bg-accent text-accent-text shadow-xs"
                   : "text-zinc-400 hover:text-zinc-200"
@@ -446,25 +443,29 @@ export function PreviewPanel() {
                 <select
                   value={recordingMode}
                   onChange={(e) => setRecordingMode(e.target.value as any)}
-                  className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 focus:outline-none"
+                  className="h-7 whitespace-nowrap rounded border border-zinc-700 bg-zinc-800 px-2 text-xs text-zinc-200 focus:outline-none"
                 >
-                  <option value="full">Full Desktop (1280×720)</option>
+                  <option value="full">
+                    {`Full Desktop (${desktopDimensions.width}×${desktopDimensions.height})`}
+                  </option>
                   <option value="selected-area">Selected Area Crop</option>
                 </select>
 
                 <select
                   value={recordingEngine}
                   onChange={(e) => setRecordingEngine(e.target.value as any)}
-                  className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 focus:outline-none"
+                  className="h-7 whitespace-nowrap rounded border border-zinc-700 bg-zinc-800 px-2 text-xs text-zinc-200 focus:outline-none"
                   title="Recording Engine: Canvas (Fast, No Prompt) or Real Screen (DisplayMedia tab record)"
                 >
                   <option value="canvas">🎨 Canvas (Fast)</option>
-                  <option value="display-media">🖥️ Real Screen Record</option>
+                  <option value="display-media">
+                    🖥️ DisplayMedia — Real 1:1 Live Screen Record
+                  </option>
                 </select>
 
                 <button
                   onClick={handleStartRecording}
-                  className="flex items-center gap-1.5 rounded bg-rose-600 px-3 py-1 text-xs font-medium text-white shadow-xs hover:bg-rose-500 transition-colors"
+                  className="flex h-6.5 items-center gap-1.5 whitespace-nowrap rounded bg-rose-600 px-3 text-xs font-medium text-white shadow-xs hover:bg-rose-500 transition-colors"
                 >
                   <Circle size={10} className="fill-current" />
                   Record Stage
@@ -472,13 +473,13 @@ export function PreviewPanel() {
               </>
             ) : (
               <div className="flex items-center gap-3">
-                <span className="flex items-center gap-1.5 rounded bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-400 border border-rose-500/20">
+                <span className="flex h-6.5 items-center gap-1.5 whitespace-nowrap rounded bg-rose-500/10 px-2.5 text-xs font-medium text-rose-400 border border-rose-500/20">
                   <span className="h-2 w-2 rounded-full bg-rose-500 animate-ping" />
                   REC {(recordDuration / 1000).toFixed(1)}s
                 </span>
                 <button
                   onClick={handleStopRecording}
-                  className="flex items-center gap-1.5 rounded bg-zinc-700 px-3 py-1 text-xs font-medium text-white hover:bg-zinc-600 transition-colors"
+                  className="flex h-6.5 items-center gap-1.5 whitespace-nowrap rounded bg-zinc-700 px-3 text-xs font-medium text-white hover:bg-zinc-600 transition-colors"
                 >
                   <Square size={10} className="fill-current" />
                   Stop Recording

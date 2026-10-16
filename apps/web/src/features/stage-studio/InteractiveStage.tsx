@@ -61,6 +61,103 @@ import type {
 export const STAGE_WIDTH = 1280;
 export const STAGE_HEIGHT = 720;
 
+/**
+ * Derives the virtual desktop canvas dimensions for a project resolution.
+ *
+ * Landscape (ratio >= 1) is normalized to a 720px-tall desktop; portrait
+ * (ratio < 1) is normalized to a 720px-wide desktop. Canonical aspect-ratio
+ * presets are snapped to their exact dimensions (e.g. 1920x822 ~= 21:9 =>
+ * 1680x720) so screen sizes stay crisp and never clip. Falls back to the
+ * standard 1280x720 desktop when no resolution is supplied.
+ */
+export function computeDesktopDimensions(
+  resolution?: { width: number; height: number },
+): { width: number; height: number } {
+  if (!resolution || !resolution.width || !resolution.height) {
+    return { width: STAGE_WIDTH, height: STAGE_HEIGHT };
+  }
+
+  const ratio = resolution.width / resolution.height;
+  const PRESETS: Array<{ ratio: number; width: number; height: number }> = [
+    { ratio: 21 / 9, width: 1680, height: 720 },
+    { ratio: 16 / 9, width: 1280, height: 720 },
+    { ratio: 4 / 3, width: 960, height: 720 },
+    { ratio: 1, width: 720, height: 720 },
+    { ratio: 4 / 5, width: 720, height: 900 },
+    { ratio: 9 / 16, width: 720, height: 1280 },
+  ];
+  const SNAP_TOLERANCE = 0.005; // 0.5% - absorbs sub-pixel capture rounding
+  const preset = PRESETS.find(
+    (p) => Math.abs(ratio - p.ratio) / p.ratio <= SNAP_TOLERANCE,
+  );
+  if (preset) {
+    return { width: preset.width, height: preset.height };
+  }
+
+  if (ratio >= 1) {
+    return { height: 720, width: Math.round(720 * ratio) };
+  }
+  return { width: 720, height: Math.round(720 / ratio) };
+}
+
+/**
+ * Computes "cover"-style draw geometry for a wallpaper image inside the
+ * virtual desktop, matching the aspect-ratio math used by the canvas
+ * recorder's `drawFrame`.
+ *
+ * Wider-than-stage images match the desktop height and center horizontally;
+ * taller (or matching) images match the desktop width and center vertically.
+ */
+export function computeWallpaperCoverDimensions(
+  imgW: number,
+  imgH: number,
+  desktopWidth: number,
+  desktopHeight: number,
+): { drawX: number; drawY: number; drawW: number; drawH: number } {
+  const imgRatio = imgW / imgH;
+  const stageRatio = desktopWidth / desktopHeight;
+
+  if (imgRatio > stageRatio) {
+    // Wider than stage: match height, crop overflow on sides
+    const drawH = desktopHeight;
+    const drawW = desktopHeight * imgRatio;
+    return { drawX: (desktopWidth - drawW) / 2, drawY: 0, drawW, drawH };
+  }
+
+  // Taller than stage: match width, crop overflow on top/bottom
+  const drawW = desktopWidth;
+  const drawH = desktopWidth / imgRatio;
+  return { drawX: 0, drawY: (desktopHeight - drawH) / 2, drawW, drawH };
+}
+
+/**
+ * Resolves a URL for the Arc browser iframe.
+ *
+ * Wikipedia's mobile site already permits iframe embedding, and internal /
+ * data / blob URLs need no rewriting. Every other external `http(s)` page is
+ * routed through the server-side proxy, which strips `X-Frame-Options` and
+ * `Content-Security-Policy` so the page can render inside the stage.
+ */
+export function getArcIframeUrl(rawUrl: string): string {
+  const url = (rawUrl ?? "").trim();
+
+  if (!url) return rawUrl;
+  if (
+    url.startsWith("/api/proxy") ||
+    url.startsWith("data:") ||
+    url.startsWith("blob:")
+  ) {
+    return rawUrl;
+  }
+  if (url.includes("wikipedia.org")) return rawUrl;
+
+  if (url.startsWith("http://") || url.startsWith("https://")) {
+    return `/api/proxy?url=${encodeURIComponent(url)}`;
+  }
+
+  return rawUrl;
+}
+
 export const APPLE_SVG_PATH =
   "M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.75 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.7-3.07-7.74-7.89-12.13-14.46-6.4-9.61-11.45-20.89-15.15-33.84-3.71-12.94-5.56-25.29-5.56-37.04 0-14.92 3.65-27.18 10.95-36.78 7.3-9.6 16.48-14.49 27.54-14.68 5.65 0 11.48 1.48 17.5 4.45 6.01 2.97 10.15 4.51 12.41 4.63 2.05-.12 6.3-1.74 12.74-4.87 6.44-3.12 12.39-4.59 17.85-4.4 13.68.75 24.62 5.61 32.81 14.58-11.97 7.27-17.85 17.38-17.65 30.34.2 10.19 4.1 18.66 11.69 25.4 7.6 6.74 16.63 10.5 27.1 11.28-2.6 7.65-5.91 15.54-9.92 23.68zM119.22 32.6c0-7.39 2.65-14.19 7.96-20.4 5.3-6.21 11.75-10.37 19.34-12.48.42 2.05.63 3.99.63 5.82 0 7.38-2.73 14.32-8.19 20.83-5.46 6.5-12.01 10.4-19.64 11.71-.1-.83-.1-1.83-.1-5.48z";
 
@@ -191,6 +288,7 @@ async function generateWelcomeDemoBlob(): Promise<Blob> {
 export interface InteractiveStageProps {
   width: number;
   height: number;
+  resolution?: { width: number; height: number };
   onTakeRecorded?: (videoBlob: Blob, manifest: StageTakeManifest) => void;
   onRecordingStatusChange?: (isRecording: boolean, durationMs: number) => void;
   selectedCrop?: Rect;
@@ -206,6 +304,7 @@ export const InteractiveStage = forwardRef<
   {
     width,
     height,
+    resolution,
     onTakeRecorded,
     onRecordingStatusChange,
     selectedCrop: externalCrop,
@@ -267,15 +366,27 @@ export const InteractiveStage = forwardRef<
   const [customWallpaperUrl, setCustomWallpaperUrl] = useState<string | null>(null);
   const customWallpaperImgRef = useRef<HTMLImageElement | null>(null);
   const wallpaperFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Live refs so async callbacks (e.g. the canvas recording loop) never read
+  // stale closures over wallpaper state.
+  const wallpaperRef = useRef(wallpaper);
+  wallpaperRef.current = wallpaper;
+  const customWallpaperUrlRef = useRef(customWallpaperUrl);
+  customWallpaperUrlRef.current = customWallpaperUrl;
+
   const [showWallpaperPicker, setShowWallpaperPicker] = useState(false);
 
   useEffect(() => {
     if (customWallpaperUrl) {
       const img = new Image();
+      img.crossOrigin = "anonymous";
       img.src = customWallpaperUrl;
       img.onload = () => {
         customWallpaperImgRef.current = img;
       };
+      if (img.complete && img.naturalWidth > 0) {
+        customWallpaperImgRef.current = img;
+      }
     }
   }, [customWallpaperUrl]);
 
@@ -383,10 +494,14 @@ export const InteractiveStage = forwardRef<
   quickTimeDurationRef.current = quickTimeDuration;
   const displayStreamRef = useRef<MediaStream | null>(null);
 
+  // Dynamic virtual desktop coordinates derived from the project resolution
+  const { width: desktopWidth, height: desktopHeight } =
+    computeDesktopDimensions(resolution);
+
   // Responsive scaling
   const scale = Math.max(
     0.1,
-    Math.min(width / STAGE_WIDTH, height / STAGE_HEIGHT),
+    Math.min(width / desktopWidth, height / desktopHeight),
   );
 
   // Seed VFS files on startup
@@ -474,8 +589,8 @@ export const InteractiveStage = forwardRef<
     const stageX = Math.round((e.clientX - rect.left) / scale);
     const stageY = Math.round((e.clientY - rect.top) / scale);
     return {
-      x: Math.max(0, Math.min(STAGE_WIDTH, stageX)),
-      y: Math.max(0, Math.min(STAGE_HEIGHT, stageY)),
+      x: Math.max(0, Math.min(desktopWidth, stageX)),
+      y: Math.max(0, Math.min(desktopHeight, stageY)),
     };
   };
 
@@ -529,19 +644,19 @@ export const InteractiveStage = forwardRef<
       let { x, y, width: w, height: h } = initialCropRect;
 
       if (cropDragMode === "move") {
-        x = Math.max(0, Math.min(STAGE_WIDTH - w, x + dx));
-        y = Math.max(0, Math.min(STAGE_HEIGHT - h, y + dy));
+        x = Math.max(0, Math.min(desktopWidth - w, x + dx));
+        y = Math.max(0, Math.min(desktopHeight - h, y + dy));
       } else {
         if (cropDragMode.includes("e")) {
           w = Math.max(
             160,
-            Math.min(STAGE_WIDTH - x, initialCropRect.width + dx),
+            Math.min(desktopWidth - x, initialCropRect.width + dx),
           );
         }
         if (cropDragMode.includes("s")) {
           h = Math.max(
             120,
-            Math.min(STAGE_HEIGHT - y, initialCropRect.height + dy),
+            Math.min(desktopHeight - y, initialCropRect.height + dy),
           );
         }
         if (cropDragMode.includes("w")) {
@@ -571,10 +686,10 @@ export const InteractiveStage = forwardRef<
     if (draggingId) {
       const dx = Math.round((e.clientX - dragStartPos.x) / scale);
       const dy = Math.round((e.clientY - dragStartPos.y) / scale);
-      const newX = Math.max(0, Math.min(STAGE_WIDTH - 80, initialRect.x + dx));
+      const newX = Math.max(0, Math.min(desktopWidth - 80, initialRect.x + dx));
       const newY = Math.max(
         28,
-        Math.min(STAGE_HEIGHT - 60, initialRect.y + dy),
+        Math.min(desktopHeight - 60, initialRect.y + dy),
       );
       wm.moveWindow(draggingId, { x: newX, y: newY });
       syncWindows();
@@ -586,11 +701,11 @@ export const InteractiveStage = forwardRef<
       const dy = Math.round((e.clientY - dragStartPos.y) / scale);
       const newW = Math.max(
         240,
-        Math.min(STAGE_WIDTH - initialRect.x, initialRect.width + dx),
+        Math.min(desktopWidth - initialRect.x, initialRect.width + dx),
       );
       const newH = Math.max(
         160,
-        Math.min(STAGE_HEIGHT - initialRect.y, initialRect.height + dy),
+        Math.min(desktopHeight - initialRect.y, initialRect.height + dy),
       );
       wm.resizeWindow(resizingId, { width: newW, height: newH });
       syncWindows();
@@ -923,9 +1038,11 @@ export const InteractiveStage = forwardRef<
     } else if (trimmed.includes(".") && !trimmed.includes(" ")) {
       navigateArcTo(`https://${trimmed}`);
     } else {
-      setArcUrl(trimmed);
-      setArcSearchQuery(trimmed);
-      void performArcSearch(trimmed);
+      // Real web search: take the user to live DuckDuckGo HTML results inside
+      // the sandboxed browser iframe.
+      navigateArcTo(
+        `https://html.duckduckgo.com/html/?q=${encodeURIComponent(trimmed)}`,
+      );
     }
   };
 
@@ -957,30 +1074,16 @@ export const InteractiveStage = forwardRef<
       ctx.scale(DPR, DPR);
 
       // 1. Desktop Wallpaper Background - aligned to global stage coordinates with cover aspect ratio
-      if (wallpaper === "custom" && customWallpaperImgRef.current) {
+      if (wallpaperRef.current === "custom" && customWallpaperImgRef.current) {
         const img = customWallpaperImgRef.current;
-        const imgW = img.naturalWidth || img.width || STAGE_WIDTH;
-        const imgH = img.naturalHeight || img.height || STAGE_HEIGHT;
-        const imgRatio = imgW / imgH;
-        const stageRatio = STAGE_WIDTH / STAGE_HEIGHT;
-        let drawW = STAGE_WIDTH;
-        let drawH = STAGE_HEIGHT;
-        let drawX = 0;
-        let drawY = 0;
-
-        if (imgRatio > stageRatio) {
-          // Wider than 16:9 stage: match height, crop overflow on sides
-          drawH = STAGE_HEIGHT;
-          drawW = STAGE_HEIGHT * imgRatio;
-          drawX = (STAGE_WIDTH - drawW) / 2;
-          drawY = 0;
-        } else {
-          // Taller than 16:9 stage: match width, crop overflow on top/bottom
-          drawW = STAGE_WIDTH;
-          drawH = STAGE_WIDTH / imgRatio;
-          drawX = 0;
-          drawY = (STAGE_HEIGHT - drawH) / 2;
-        }
+        const imgW = img.naturalWidth || img.width || desktopWidth;
+        const imgH = img.naturalHeight || img.height || desktopHeight;
+        const { drawX, drawY, drawW, drawH } = computeWallpaperCoverDimensions(
+          imgW,
+          imgH,
+          desktopWidth,
+          desktopHeight,
+        );
 
         ctx.drawImage(
           img,
@@ -993,18 +1096,18 @@ export const InteractiveStage = forwardRef<
         const bgGrad = ctx.createLinearGradient(
           -recRect.x,
           -recRect.y,
-          STAGE_WIDTH - recRect.x,
-          STAGE_HEIGHT - recRect.y,
+          desktopWidth - recRect.x,
+          desktopHeight - recRect.y,
         );
-        if (wallpaper === "macos-sonoma") {
+        if (wallpaperRef.current === "macos-sonoma") {
           bgGrad.addColorStop(0, "#d97706");
           bgGrad.addColorStop(0.5, "#e11d48");
           bgGrad.addColorStop(1, "#581c87");
-        } else if (wallpaper === "macos-sequoia") {
+        } else if (wallpaperRef.current === "macos-sequoia") {
           bgGrad.addColorStop(0, "#064e3b");
           bgGrad.addColorStop(0.5, "#134e4a");
           bgGrad.addColorStop(1, "#0f172a");
-        } else if (wallpaper === "macos-monterey") {
+        } else if (wallpaperRef.current === "macos-monterey") {
           bgGrad.addColorStop(0, "#4c1d95");
           bgGrad.addColorStop(0.5, "#be185d");
           bgGrad.addColorStop(1, "#1e40af");
@@ -1019,12 +1122,12 @@ export const InteractiveStage = forwardRef<
 
         // Ambient desktop nebula glow
         const orbGrad = ctx.createRadialGradient(
-          STAGE_WIDTH * 0.7 - recRect.x,
-          STAGE_HEIGHT * 0.3 - recRect.y,
+          desktopWidth * 0.7 - recRect.x,
+          desktopHeight * 0.3 - recRect.y,
           20,
-          STAGE_WIDTH * 0.7 - recRect.x,
-          STAGE_HEIGHT * 0.3 - recRect.y,
-          Math.max(200, STAGE_WIDTH * 0.5),
+          desktopWidth * 0.7 - recRect.x,
+          desktopHeight * 0.3 - recRect.y,
+          Math.max(200, desktopWidth * 0.5),
         );
         orbGrad.addColorStop(0, "rgba(99, 102, 241, 0.25)");
         orbGrad.addColorStop(1, "rgba(0, 0, 0, 0)");
@@ -1524,52 +1627,7 @@ export const InteractiveStage = forwardRef<
             ctx.fillText("Source document: " + currentUrlText, rx + 20, contentY + 104);
           } else {
             // Live web view representations matching standard sites
-            if (currentUrlText.includes("wikipedia.org")) {
-              ctx.fillStyle = "#ffffff";
-              ctx.fillRect(rx, contentY, rw, contentH);
-
-              // Wikipedia header
-              ctx.fillStyle = "#f8f9fa";
-              ctx.fillRect(rx, contentY, rw, 30);
-              ctx.strokeStyle = "#a2a9b1";
-              ctx.beginPath();
-              ctx.moveTo(rx, contentY + 30);
-              ctx.lineTo(rx + rw, contentY + 30);
-              ctx.stroke();
-
-              ctx.fillStyle = "#202122";
-              ctx.font = "bold 12px 'Georgia', serif";
-              ctx.fillText("WIKIPEDIA", rx + 16, contentY + 20);
-              ctx.font = "italic 9px 'Georgia', serif";
-              ctx.fillStyle = "#54595d";
-              ctx.fillText("The Free Encyclopedia", rx + 90, contentY + 20);
-
-              // Article content
-              const parts = currentUrlText.split("/");
-              const rawArticle = parts[parts.length - 1] || "Main_Page";
-              const articleName = decodeURIComponent(rawArticle).replace(/_/g, " ");
-
-              ctx.fillStyle = "#000000";
-              ctx.font = "bold 15px 'Georgia', serif";
-              ctx.fillText(articleName, rx + 16, contentY + 54);
-
-              ctx.strokeStyle = "#a2a9b1";
-              ctx.beginPath();
-              ctx.moveTo(rx + 16, contentY + 62);
-              ctx.lineTo(rx + rw - 16, contentY + 62);
-              ctx.stroke();
-
-              ctx.fillStyle = "#202122";
-              ctx.font = "11px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
-              ctx.fillText(`${articleName} is an encyclopedia topic documented on Wikipedia.`, rx + 16, contentY + 80);
-              ctx.fillText("From the free collaborative encyclopedia edited by volunteers worldwide.", rx + 16, contentY + 96);
-              ctx.fillText("Explore references, history, and community contributions.", rx + 16, contentY + 112);
-
-              // Simulated link tags
-              ctx.fillStyle = "#3366cc";
-              ctx.fillText("• References and external sources", rx + 16, contentY + 132);
-              ctx.fillText("• Related topics and category indices", rx + 16, contentY + 148);
-            } else if (currentUrlText.includes("duckduckgo.com")) {
+            if (currentUrlText.includes("duckduckgo.com")) {
               ctx.fillStyle = "#1e1e24";
               ctx.fillRect(rx, contentY, rw, contentH);
 
@@ -1804,8 +1862,8 @@ export const InteractiveStage = forwardRef<
         dockApps.length * iconTileSize +
         (dockApps.length - 1) * gap; // 24 + 200 + 32 = 256
       const dockH = 54;
-      const dockX = (STAGE_WIDTH - dockW) / 2 - recRect.x;
-      const dockY = STAGE_HEIGHT - dockH - 8 - recRect.y;
+      const dockX = (desktopWidth - dockW) / 2 - recRect.x;
+      const dockY = desktopHeight - dockH - 8 - recRect.y;
 
       if (
         dockY < recRect.height &&
@@ -2019,8 +2077,8 @@ export const InteractiveStage = forwardRef<
         const stageRect = {
           x: 0,
           y: 0,
-          width: STAGE_WIDTH,
-          height: STAGE_HEIGHT,
+          width: desktopWidth,
+          height: desktopHeight,
         };
         const resolved = resolveRecordingRect(stageRect, {
           mode: targetMode,
@@ -2146,7 +2204,7 @@ export const InteractiveStage = forwardRef<
         const finalCrop =
           activeRecordingMode === "selected-area"
             ? selectedCrop
-            : { x: 0, y: 0, width: STAGE_WIDTH, height: STAGE_HEIGHT };
+            : { x: 0, y: 0, width: desktopWidth, height: desktopHeight };
 
         const manifest: StageTakeManifest = {
           takeId: `take-${Date.now()}`,
@@ -2175,6 +2233,10 @@ export const InteractiveStage = forwardRef<
       onTakeRecorded,
       onRecordingStatusChange,
       onRecordingModeChange,
+      desktopWidth,
+      desktopHeight,
+      wallpaper,
+      customWallpaperUrl,
     ],
   );
 
@@ -2186,13 +2248,13 @@ export const InteractiveStage = forwardRef<
       {/* Hidden off-screen canvas for frame capture */}
       <canvas ref={canvasRecordRef} className="hidden" />
 
-      {/* 1280x720 Virtual macOS Desktop Screen (Scaled) */}
+      {/* Dynamic virtual macOS Desktop Screen (Scaled) */}
       <div
         ref={stageRef}
-        className="relative overflow-hidden rounded-lg shadow-2xl border border-zinc-800 select-none"
+        className="relative shrink-0 overflow-hidden rounded-lg shadow-2xl border border-zinc-800 select-none"
         style={{
-          width: STAGE_WIDTH,
-          height: STAGE_HEIGHT,
+          width: desktopWidth,
+          height: desktopHeight,
           transform: `scale(${scale})`,
           transformOrigin: "center center",
           ...(customWallpaperUrl && wallpaper === "custom"
@@ -2315,10 +2377,14 @@ export const InteractiveStage = forwardRef<
                   setCustomWallpaperUrl(url);
                   setWallpaper("custom");
                   const img = new Image();
+                  img.crossOrigin = "anonymous";
                   img.src = url;
                   img.onload = () => {
                     customWallpaperImgRef.current = img;
                   };
+                  if (img.complete && img.naturalWidth > 0) {
+                    customWallpaperImgRef.current = img;
+                  }
                 }
               }}
             />
@@ -2776,7 +2842,7 @@ export const InteractiveStage = forwardRef<
                       <span className="shrink-0 font-medium text-zinc-500">Bookmarks:</span>
                       {[
                         { name: "Wikipedia", url: "https://en.m.wikipedia.org" },
-                        { name: "DuckDuckGo", url: "https://duckduckgo.com" },
+                        { name: "DuckDuckGo", url: "https://html.duckduckgo.com/html/" },
                         { name: "DevDocs", url: "https://devdocs.io" },
                         { name: "Example Domain", url: "https://example.com" },
                         { name: "Hacker News", url: "https://news.ycombinator.com" },
@@ -2785,10 +2851,9 @@ export const InteractiveStage = forwardRef<
                           key={bm.name}
                           onClick={() => {
                             if (bm.name === "DuckDuckGo") {
-                              navigateArcTo("https://duckduckgo.com");
+                              navigateArcTo("https://html.duckduckgo.com/html/");
                             } else if (bm.name === "Hacker News") {
                               navigateArcTo("https://news.ycombinator.com");
-                              setArcReaderMode(true);
                             } else {
                               navigateArcTo(bm.url);
                             }
@@ -2905,61 +2970,10 @@ export const InteractiveStage = forwardRef<
                             </p>
                           </div>
                         </div>
-                      ) : arcActiveUrl.includes("duckduckgo.com") ? (
-                        <div className="flex h-full flex-col items-center justify-center bg-[#1e1e24] px-6 text-center select-none">
-                          <div className="mb-4 flex items-center justify-center gap-2">
-                            <span className="text-3xl">🦆</span>
-                            <h2 className="text-xl font-bold tracking-tight text-white">DuckDuckGo</h2>
-                          </div>
-                          <p className="mb-6 text-xs text-zinc-400">
-                            Privacy, simplified. Search the web without being tracked.
-                          </p>
-
-                          <form
-                            onSubmit={(e) => {
-                              e.preventDefault();
-                              if (arcSearchQuery.trim()) {
-                                void performArcSearch(arcSearchQuery.trim());
-                              }
-                            }}
-                            className="flex w-full max-w-md items-center rounded-full border border-zinc-700 bg-zinc-900/90 px-4 py-2 shadow-lg focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500"
-                          >
-                            <Search size={16} className="text-zinc-400 mr-2 shrink-0" />
-                            <input
-                              type="text"
-                              value={arcSearchQuery}
-                              onChange={(e) => setArcSearchQuery(e.target.value)}
-                              placeholder="Search without being tracked..."
-                              className="flex-1 bg-transparent text-xs text-white placeholder-zinc-500 focus:outline-none"
-                            />
-                            <button
-                              type="submit"
-                              className="ml-2 rounded-full bg-indigo-600 px-3 py-1 text-[11px] font-medium text-white hover:bg-indigo-500 transition-colors"
-                            >
-                              Search
-                            </button>
-                          </form>
-
-                          <div className="mt-6 flex flex-wrap items-center justify-center gap-2 text-[11px] text-zinc-400">
-                            <span className="text-zinc-500">Popular:</span>
-                            {["React", "Next.js", "Tailwind CSS", "TypeScript", "Python"].map((term) => (
-                              <button
-                                key={term}
-                                onClick={() => {
-                                  setArcSearchQuery(term);
-                                  void performArcSearch(term);
-                                }}
-                                className="rounded-full border border-zinc-800 bg-zinc-900/60 px-2.5 py-1 text-zinc-300 hover:border-zinc-700 hover:text-white transition-colors"
-                              >
-                                {term}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
                       ) : (
                         <div className="relative h-full w-full">
                           <iframe
-                            src={arcActiveUrl}
+                            src={getArcIframeUrl(arcActiveUrl)}
                             title="Arc Web Browser"
                             sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
                             className="h-full w-full border-0 bg-white"
